@@ -18,8 +18,6 @@
 - Node with node-pty and Vitest. Rejected: OpenTUI needs an experimental flag on Node, and the app
   would need a second runtime next to the Bun tooling.
 - Bun with node-pty. Rejected: node-pty did not work under Bun in the spike.
-- Bun with a PTY helper written in another language. Rejected: it adds a second build and a process
-  boundary that `Bun.spawn` already covers.
 - Bun as runtime, package manager, test runner, and PTY, built into one binary. Chosen: one runtime
   covers the tooling, the app, the PTYs, and every test.
 
