@@ -41,6 +41,15 @@ Terminal multiplexer with a session server and a terminal client. Read
   [ADR 0007](docs/adr/0007-coding-conventions.md). Before designing, know two of them: return a
   typed result for an expected failure and throw only for bugs, and parse untrusted data once with
   zod where it enters.
+- `src/` holds capability modules. Folder modules `vt/`, `rows/`, `store/`, `protocol/`, `server/`,
+  `client/`, and `ui/` each have one public entry file named after the folder, such as
+  `store/store.ts`. Other files in the folder are private. Flat modules are `ids.ts`,
+  `invariant.ts`, `layout.ts`, and `index.ts`. See [ADR 0008](docs/adr/0008-capability-modules.md).
+- Imports follow the table in ADR 0008. `phi/module-boundaries` enforces it in ordinary lint. Do not
+  silence it; change the table in `scripts/stylePlugin.ts` when a new edge keeps the ADR's
+  directions.
+- Put types beside the code that owns them. Do not add barrels, a shared `types.ts`, or `utils/`.
+  Extract shared code only for two existing consumers.
 
 ## Tests
 

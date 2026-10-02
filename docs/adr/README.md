@@ -28,3 +28,4 @@ decision replaces it, change its status to Superseded with a link to the replace
 - [0005: OpenTUI with React for the UI, panes outside React](./0005-opentui-react-ui.md)
 - [0006: One server store with pure transitions and a typed change feed](./0006-server-state-store.md)
 - [0007: Results for expected failures, exceptions for bugs, and checked boundaries](./0007-coding-conventions.md)
+- [0008: Capability modules with an enforced import table](./0008-capability-modules.md)
