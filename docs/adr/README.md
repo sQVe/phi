@@ -26,3 +26,4 @@ decision replaces it, change its status to Superseded with a link to the replace
 - [0003: One parser per pane in the server, drawing in the client](./0003-session-server-and-client.md)
 - [0004: libghostty-vt through bun:ffi and a thin C shim](./0004-libghostty-vt.md)
 - [0005: OpenTUI with React for the UI, panes outside React](./0005-opentui-react-ui.md)
+- [0006: One server store with pure transitions and a typed change feed](./0006-server-state-store.md)

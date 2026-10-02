@@ -34,6 +34,9 @@ Terminal multiplexer with a session server and a terminal client. Read
   `useSyncExternalStore` and send intents. Lint refuses `useEffect`; an effect that connects to an
   outside system needs a disable comment with its reason. See
   [ADR 0005](docs/adr/0005-opentui-react-ui.md).
+- Change server state only through the store's pure transitions. Run effects outside the store and
+  report results as generation-tagged facts. Keep PTYs, parsers, sockets, and terminal cells out of
+  state, in the runtime registry. See [ADR 0006](docs/adr/0006-server-state-store.md).
 
 ## Tests
 
