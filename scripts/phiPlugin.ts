@@ -16,13 +16,38 @@ type ImportSource =
   | ESTree.ExportNamedDeclaration
   | ESTree.ExportAllDeclaration;
 
-// With no modules listed, every file in `src/` is refused.
-const folderModules = new Set<string>();
-const flatModules = new Set<string>();
-const allowedImports = new Map<string, Set<string>>();
-const typeOnlyImports = new Map<string, Set<string>>();
-const runtimeModules = new Set<string>();
-const rendererFreeModules = new Set<string>();
+const folderModules = new Set(['vt', 'rows', 'store', 'protocol', 'server', 'client', 'ui']);
+const flatModules = new Set(['ids', 'invariant', 'layout', 'index']);
+
+const allowedImports = new Map<string, Set<string>>([
+  ['ids', new Set()],
+  ['invariant', new Set()],
+  ['vt', new Set(['invariant'])],
+  ['rows', new Set(['ids', 'invariant'])],
+  ['layout', new Set(['ids', 'invariant'])],
+  ['store', new Set(['ids', 'invariant', 'layout'])],
+  ['protocol', new Set(['ids', 'invariant', 'rows'])],
+  ['server', new Set(['ids', 'invariant', 'vt', 'rows', 'layout', 'store', 'protocol'])],
+  ['client', new Set(['ids', 'invariant', 'rows', 'protocol'])],
+  ['ui', new Set(['ids', 'invariant', 'client'])],
+  ['index', new Set([...folderModules, ...flatModules])],
+]);
+
+const typeOnlyImports = new Map([['protocol', new Set(['store'])]]);
+const runtimeModules = new Set(['ids', 'invariant', 'rows', 'layout', 'store']);
+
+const rendererFreeModules = new Set([
+  'ids',
+  'invariant',
+  'vt',
+  'rows',
+  'layout',
+  'store',
+  'protocol',
+  'server',
+  'client',
+]);
+
 const packageRoots = new Map<string, string | undefined>();
 
 // The nearest package.json marks the root, so a `src` segment above it never counts.
