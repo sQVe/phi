@@ -8,3 +8,4 @@ so you can detach and reattach.
 > Phi is in early setup. The repository contains development tooling only; there is no app yet.
 
 - [Development](./docs/development.md)
+- [Documentation](./docs/README.md)
