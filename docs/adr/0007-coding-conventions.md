@@ -54,7 +54,8 @@ boundary, with zod.
 
 ### Names
 
-- Name files and folders in camelCase.
+- Name files and folders in camelCase. A file named after the React component or class it exports
+  may use PascalCase, such as `StatusBar.tsx`.
 
 ### Dependencies
 

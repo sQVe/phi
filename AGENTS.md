@@ -46,7 +46,8 @@ Terminal multiplexer with a session server and a terminal client. Read
   drawing may reuse buffers and mutate typed arrays.
 - Use a class only for an owned resource with a dispose step. Do not use inheritance unless OpenTUI
   requires it.
-- Name files and folders in camelCase.
+- Name files and folders in camelCase. A file named after the React component or class it exports
+  may use PascalCase.
 - Prefer Bun built-ins. Add a runtime dependency only with a stated reason and an exact version; a
   core dependency needs an ADR.
 
