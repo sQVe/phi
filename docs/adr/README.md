@@ -27,3 +27,4 @@ decision replaces it, change its status to Superseded with a link to the replace
 - [0004: libghostty-vt through bun:ffi and a thin C shim](./0004-libghostty-vt.md)
 - [0005: OpenTUI with React for the UI, panes outside React](./0005-opentui-react-ui.md)
 - [0006: One server store with pure transitions and a typed change feed](./0006-server-state-store.md)
+- [0007: Results for expected failures, exceptions for bugs, and checked boundaries](./0007-coding-conventions.md)
