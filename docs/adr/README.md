@@ -25,3 +25,4 @@ decision replaces it, change its status to Superseded with a link to the replace
 - [0002: Bun as runtime, package manager, test runner, and PTY](./0002-bun-runtime-and-pty.md)
 - [0003: One parser per pane in the server, drawing in the client](./0003-session-server-and-client.md)
 - [0004: libghostty-vt through bun:ffi and a thin C shim](./0004-libghostty-vt.md)
+- [0005: OpenTUI with React for the UI, panes outside React](./0005-opentui-react-ui.md)
