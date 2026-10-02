@@ -27,6 +27,9 @@ Terminal multiplexer with a session server and a terminal client. Read
 - Only the server parses pane output. The client draws rows the server sends and never parses PTY
   bytes. Only the layout sets a pane's size. See
   [ADR 0003](docs/adr/0003-session-server-and-client.md).
+- Keep the libghostty-vt shim thin. Put each Ghostty patch in `patches/` with its reason and an
+  upstream link, and bump the Ghostty pin in its own PR. See
+  [ADR 0004](docs/adr/0004-libghostty-vt.md).
 
 ## Tests
 
