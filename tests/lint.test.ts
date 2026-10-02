@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 
@@ -57,7 +57,7 @@ it('runs house style through the style command but not plain lint', async () => 
 }, 60_000);
 
 it.each(['lint', 'style:check'])(
-  'refuses files outside a known module through %s',
+  'keeps imports inside module boundaries through %s',
   async (script) => {
     const directory = await mkdtemp(join(tmpdir(), 'phi-boundaries-'));
     onTestFinished(() => rm(directory, { recursive: true, force: true }));
@@ -65,35 +65,383 @@ it.each(['lint', 'style:check'])(
     // The `src` segment above the project root must not count as the application source.
     const project = join(directory, 'src', 'project');
 
+    const serverUrl = pathToFileURL(join(project, 'src', 'server', 'server.ts')).href;
+    const privateBindingsUrl = pathToFileURL(join(project, 'src', 'vt', 'bindings.ts')).href;
+    const protocolUrl = pathToFileURL(join(project, 'src', 'protocol', 'protocol.ts')).href;
+
     const fixtures: [string, string[], number][] = [
+      ['src/ids.ts', ['export const ids = 1;', 'export interface PaneId { id: number }'], 0],
+      ['src/invariant.ts', ['export const invariant = 1;'], 0],
       [
-        'src/main.ts',
-        ["import { helper } from './helper/helper.ts';", 'export const main = helper;'],
-        1,
+        'src/vt/vt.ts',
+        [
+          "import { dlopen } from 'bun:ffi';",
+          "import { readFile } from 'node:fs/promises';",
+          "import { invariant } from '../invariant.ts';",
+          "import { bindings } from './bindings.ts';",
+          "import { nested } from './nested/deep';",
+          'export const vt = [dlopen, readFile, invariant, bindings, nested];',
+        ],
+        0,
       ],
-      ['src/helper/helper.ts', ['export const helper = 1;'], 1],
+      ['src/vt/bindings.ts', ["import { ptr } from 'bun:ffi';", 'export const bindings = ptr;'], 0],
       [
-        'src/main.test.ts',
+        'src/vt/nested/deep.ts',
+        ["import { bindings } from '../bindings.ts';", 'export const nested = bindings;'],
+        0,
+      ],
+      [
+        'src/vt/vt.test.ts',
         [
           "import { expect, it } from 'bun:test';",
-          "import { main } from './main.ts';",
-          "it('runs', () => expect(main).toBe(1));",
+          "import { vt } from './vt.ts';",
+          "it('loads', () => expect(vt).toHaveLength(5));",
         ],
-        1,
+        0,
+      ],
+      [
+        'src/rows/rows.ts',
+        [
+          "import { ids } from '../ids';",
+          "import { invariant } from '../invariant.js';",
+          'export const rows = [ids, invariant];',
+        ],
+        0,
+      ],
+      [
+        'src/layout.ts',
+        [
+          "import { ids } from './ids.ts';",
+          "import { invariant } from './invariant.ts';",
+          'export const layout = [ids, invariant];',
+          'export interface Layout { width: number }',
+        ],
+        0,
+      ],
+      [
+        'src/store/store.ts',
+        [
+          "import { ids } from '../ids.ts';",
+          "import { invariant } from '../invariant.ts';",
+          "import { layout } from '../layout.ts';",
+          "import { reduce } from './reduce.ts';",
+          'export const store = [ids, invariant, layout, reduce];',
+          'export interface State { id: number }',
+        ],
+        0,
+      ],
+      ['src/store/reduce.ts', ['export const reduce = 1;'], 0],
+      [
+        'src/protocol/protocol.ts',
+        [
+          "import type { State } from '../store/store.ts';",
+          "import { type State as Snapshot } from '../store/store.ts';",
+          "import { ids } from '../ids.ts';",
+          "import { invariant } from '../invariant.ts';",
+          "import { rows } from '../rows/rows.ts';",
+          "export type { State as Current } from '../store/store.ts';",
+          "export type StateIdentifier = import('../store/store.ts').State['id'];",
+          'const loaded = await import(`../rows/rows.ts`);',
+          'export const protocol = [ids, invariant, rows, loaded];',
+          'export type Sources = [State, Snapshot];',
+        ],
+        0,
+      ],
+      [
+        'src/server/server.ts',
+        [
+          "import { spawn } from 'bun';",
+          "import { createServer } from 'node:net';",
+          "import { ids } from '../ids.ts';",
+          "import { invariant } from '../invariant.ts';",
+          "import { layout } from '../layout.ts';",
+          "import { protocol } from '../protocol/protocol.ts';",
+          "import { rows } from '../rows/rows.ts';",
+          "import { store } from '../store/store.ts';",
+          "import { vt } from '../vt/vt.ts';",
+          'export const server = [spawn, createServer, ids, invariant, layout, protocol, rows, store, vt];',
+        ],
+        0,
+      ],
+      [
+        'src/client/client.ts',
+        [
+          "import { connect } from 'node:net';",
+          "import { ids } from '../ids.ts';",
+          "import { invariant } from '../invariant.ts';",
+          `import { protocol } from '${protocolUrl}';`,
+          "import { rows } from '../rows/rows.ts';",
+          'export const client = [connect, ids, invariant, protocol, rows];',
+        ],
+        0,
+      ],
+      [
+        'src/ui/ui.tsx',
+        [
+          "import { createCliRenderer } from '@opentui/core';",
+          "import { createRoot } from '@opentui/react';",
+          "import { argv } from 'node:process';",
+          "import { useState } from 'react';",
+          "import { jsx } from 'react/jsx-runtime';",
+          "import { client } from '../client/client.ts';",
+          "import { ids } from '../ids.ts';",
+          "import { invariant } from '../invariant.ts';",
+          "import { view } from './view.tsx';",
+          'export const ui = [createCliRenderer, createRoot, argv, useState, jsx, client, ids, invariant, view];',
+        ],
+        0,
+      ],
+      ['src/ui/view.tsx', ['export const view = 1;'], 0],
+      [
+        'src/index.ts',
+        [
+          "import { createCliRenderer } from '@opentui/core';",
+          "import { useState } from 'react';",
+          "import { client } from './client/client.ts';",
+          "import { ids } from './ids.ts';",
+          "import { invariant } from './invariant.ts';",
+          "import { layout } from './layout.ts';",
+          "import { protocol } from './protocol/protocol.ts';",
+          "import { rows } from './rows/rows.ts';",
+          "import { server } from './server/server.ts';",
+          "import { store } from './store/store.ts';",
+          "import { ui } from './ui/ui.tsx';",
+          "import { vt } from './vt/vt.ts';",
+          'export const index = [createCliRenderer, useState, client, ids, invariant, layout];',
+          'export const modules = [protocol, rows, server, store, ui, vt];',
+        ],
+        0,
       ],
       [
         'scripts/tool.ts',
         [
           "import { readFile } from 'node:fs';",
-          "import { helper } from '../src/helper/helper.ts';",
-          'export const tool = [readFile, helper];',
+          "import { bindings } from '../src/vt/bindings.ts';",
+          'export const tool = [readFile, bindings];',
         ],
         0,
       ],
+      ['src/utils.ts', ['export const utils = 1;'], 1],
+      ['src/helpers/format.ts', ['export const format = 1;'], 1],
+      ['src/store.ts', ['export const misplaced = 1;'], 1],
+      ['src/layout/values.ts', ['export const values = 1;'], 1],
       [
-        'tests/tool.test.ts',
-        ["import { tool } from '../scripts/tool.ts';", 'export const tested = tool;'],
-        0,
+        'src/server/unknownTargets.ts',
+        [
+          "import { utils } from '../utils.ts';",
+          "import { format } from '../helpers/format.ts';",
+          'export const unknown = [utils, format];',
+        ],
+        2,
+      ],
+      [
+        'src/ids.test.ts',
+        [
+          "import { expect, it } from 'bun:test';",
+          "import { readFile } from 'node:fs';",
+          "import { ids } from './ids.ts';",
+          "import { invariant } from './invariant.ts';",
+          "it('names', () => expect([readFile, ids, invariant]).toHaveLength(3));",
+        ],
+        2,
+      ],
+      [
+        'src/invariant.test.ts',
+        [
+          "import { expect, it } from 'bun:test';",
+          "import { readFile } from 'node:fs/promises';",
+          "import { ids } from './ids.ts';",
+          "import { invariant } from './invariant.ts';",
+          "it('holds', () => expect([readFile, ids, invariant]).toHaveLength(3));",
+        ],
+        2,
+      ],
+      [
+        'src/layout.test.ts',
+        [
+          "import { expect, it } from 'bun:test';",
+          "import { join } from 'node:path';",
+          "import { layout } from './layout.ts';",
+          "it('lays out', () => expect([join, layout]).toHaveLength(2));",
+        ],
+        1,
+      ],
+      [
+        'src/vt/refusedModules.ts',
+        [
+          "import { ids } from '../ids.ts';",
+          "import type { State } from '../store/store.ts';",
+          "export * from '../rows/rows.ts';",
+          "import { index } from '../index.ts';",
+          'export const refused: [number, State?] = [ids, index];',
+        ],
+        4,
+      ],
+      [
+        'src/rows/refusedModules.ts',
+        [
+          "import { layout } from '../layout.ts';",
+          "import { store } from '../store/store.ts';",
+          "import { vt } from '../vt/vt.ts';",
+          'export const refused = [layout, store, vt];',
+        ],
+        3,
+      ],
+      [
+        'src/store/refusedModules.ts',
+        [
+          "import { protocol } from '../protocol/protocol.ts';",
+          "import { rows } from '../rows/rows.ts';",
+          "import { server } from '../server/server.ts';",
+          'export const refused = [protocol, rows, server];',
+        ],
+        3,
+      ],
+      [
+        'src/protocol/refusedModules.ts',
+        [
+          "import type { Layout } from '../layout.ts';",
+          "import { client } from '../client/client.ts';",
+          "export type Server = import('../server/server.ts').Server;",
+          'export const refused: [unknown, Layout?] = [client];',
+        ],
+        3,
+      ],
+      [
+        'src/client/refusedModules.ts',
+        [
+          "import { layout } from '../layout.ts';",
+          "import type { State } from '../store/store.ts';",
+          "import { server } from '../server/server.ts';",
+          "import { ui } from '../ui/ui.tsx';",
+          "import { vt } from '../vt/vt.ts';",
+          'export const refused: [unknown, State?] = [layout, server, ui, vt];',
+        ],
+        5,
+      ],
+      [
+        'src/ui/refusedModules.tsx',
+        [
+          "import { protocol } from '../protocol/protocol.ts';",
+          "import { rows } from '../rows/rows.ts';",
+          "import { server } from '../server/server.ts';",
+          "import { store } from '../store/store.ts';",
+          'export const refused = [protocol, rows, server, store];',
+        ],
+        4,
+      ],
+      [
+        'src/server/refusedModules.ts',
+        [
+          "import { client } from '../client/client.ts';",
+          "import { index } from '../index.ts';",
+          "import { ui } from '../ui/ui.tsx';",
+          'export const refused = [client, index, ui];',
+        ],
+        3,
+      ],
+      [
+        'src/protocol/valueImports.ts',
+        [
+          "import { store } from '../store/store.ts';",
+          "import { type State, store as current } from '../store/store.ts';",
+          "export { store as exported } from '../store/store.ts';",
+          "const loaded = await import('../store/store.ts');",
+          'export const values = [store, current, loaded];',
+          'export type Value = State;',
+        ],
+        4,
+      ],
+      [
+        'src/server/privateImports.ts',
+        [
+          "import { bindings } from '../vt/bindings.ts';",
+          "import { vt } from '../vt';",
+          "import { nested } from '../vt/nested/deep.ts';",
+          "export * from '../protocol/valueImports.ts';",
+          'export const imported = [bindings, vt, nested];',
+        ],
+        4,
+      ],
+      [
+        'src/server/escape.ts',
+        [
+          "import { outside } from '../../outside.ts';",
+          "import { vt } from '../../src/vt/vt.ts';",
+          'export const escaped = [outside, vt];',
+        ],
+        1,
+      ],
+      [
+        'src/store/runtime.ts',
+        [
+          "import { readFile } from 'node:fs';",
+          "import path from 'path';",
+          "import { $ } from 'bun';",
+          "import { test } from 'bun:test';",
+          "import { dlopen } from 'bun:ffi';",
+          "import { useState } from 'react';",
+          "import { jsx } from 'react/jsx-runtime';",
+          "import { createCliRenderer } from '@opentui/core';",
+          "import { z } from 'zod';",
+          'export const runtime = [readFile, path, $, test, dlopen, useState, jsx, createCliRenderer, z];',
+        ],
+        8,
+      ],
+      [
+        'src/rows/runtime.ts',
+        ["import { readFileSync } from 'fs';", 'export const runtime = readFileSync;'],
+        1,
+      ],
+      [
+        'src/server/renderer.ts',
+        [
+          "import { readFile } from 'node:fs';",
+          "import { useState } from 'react';",
+          "import { createCliRenderer } from '@opentui/core';",
+          'export const renderer = [readFile, useState, createCliRenderer];',
+        ],
+        2,
+      ],
+      [
+        'src/client/renderer.ts',
+        [
+          "import { connect } from 'node:net';",
+          "import { createRoot } from '@opentui/react';",
+          'export const renderer = [connect, createRoot];',
+        ],
+        1,
+      ],
+      [
+        'src/vt/renderer.ts',
+        ["import { useState } from 'react';", 'export const renderer = useState;'],
+        1,
+      ],
+      [
+        'src/protocol/renderer.ts',
+        ["import { jsx } from 'react/jsx-runtime';", 'export const renderer = jsx;'],
+        1,
+      ],
+      [
+        'src/client/dynamic.ts',
+        [
+          "const name = 'helper';",
+          'export const computed = await import(name);',
+          // eslint-disable-next-line eslint/no-template-curly-in-string -- Fixture source with an interpolated import.
+          'export const interpolated = await import(`./${name}.ts`);',
+          "export const refused = await import('../server/server.ts');",
+          "export const allowed = await import('./client.ts');",
+        ],
+        3,
+      ],
+      ['src/client/directory.ts', ["export * from '.';"], 1],
+      [
+        'src/client/fileUrls.ts',
+        [
+          `export { server } from '${serverUrl}';`,
+          `export const loaded = await import('${privateBindingsUrl}');`,
+        ],
+        2,
       ],
     ];
 
@@ -135,7 +483,8 @@ it.each(['lint', 'style:check'])(
       expect({ file, diagnostics: fileDiagnostics.length }).toEqual({ file, diagnostics: count });
     }
 
-    expect(diagnostics).toHaveLength(3);
+    const expected = fixtures.reduce((total, fixture) => total + fixture[2], 0);
+    expect(diagnostics).toHaveLength(expected);
   },
   30_000,
 );
