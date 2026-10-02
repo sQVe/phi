@@ -67,7 +67,3 @@ on demand.
 - Cost: each keystroke echo adds one row encode and decode, so echo is a little slower than raw
   forwarding.
 - Cost: the client must receive input modes from the server to encode keys and mouse events.
-
-## See also
-
-- [WezTerm multiplexer](https://wezterm.org/multiplexing.html)
