@@ -22,3 +22,4 @@ decision replaces it, change its status to Superseded with a link to the replace
 ## Index
 
 - [0001: Documentation scope](./0001-documentation-scope.md)
+- [0002: Bun as runtime, package manager, test runner, and PTY](./0002-bun-runtime-and-pty.md)

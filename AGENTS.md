@@ -20,6 +20,11 @@ Terminal multiplexer with a session server and a terminal client. Read
 - Before finishing a document, check its local links and verify the commands it gives against the
   repository.
 
+## Architecture
+
+- Spawn pane processes with `Bun.spawn` and its `terminal` option. Do not add node-pty or another
+  PTY package. See [ADR 0002](docs/adr/0002-bun-runtime-and-pty.md).
+
 ## Tests
 
 Keep tests fast so the full suite stays practical as coverage grows.
