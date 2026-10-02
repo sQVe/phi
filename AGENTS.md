@@ -7,6 +7,9 @@ Terminal multiplexer with a session server and a terminal client. Read
   formatting, Knip, and tests.
 - Format with `bun run format`, and fix style with `bun run style:fix`. House style comes from
   `@sqve/seam`; Phi's own lint rules live in `scripts/phiPlugin.ts`.
+- Follow the decisions in [docs/adr](docs/adr/README.md), and record new decisions there. Read that
+  guide before adding an ADR. Do not write documents that explain how a feature works; see
+  [ADR 0001](docs/adr/0001-documentation-scope.md).
 - Name values in camelCase and types in PascalCase. Never SCREAMING_CASE, not even for module
   constants.
 - Declare a helper before the code that uses it. Join at most three checks in one condition, and do
