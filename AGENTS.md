@@ -30,6 +30,9 @@ Terminal multiplexer with a session server and a terminal client. Read
 - Keep the libghostty-vt shim thin. Put each Ghostty patch in `patches/` with its reason and an
   upstream link, and bump the Ghostty pin in its own PR. See
   [ADR 0004](docs/adr/0004-libghostty-vt.md).
+- Draw panes with the custom pane renderable, never through React. React components read state with
+  `useSyncExternalStore` and send intents; do not move data with `useEffect`. See
+  [ADR 0005](docs/adr/0005-opentui-react-ui.md).
 
 ## Tests
 
