@@ -24,6 +24,9 @@ Terminal multiplexer with a session server and a terminal client. Read
 
 - Spawn pane processes with `Bun.spawn` and its `terminal` option. Do not add node-pty or another
   PTY package. See [ADR 0002](docs/adr/0002-bun-runtime-and-pty.md).
+- Only the server parses pane output. The client draws rows the server sends and never parses PTY
+  bytes. Only the layout sets a pane's size. See
+  [ADR 0003](docs/adr/0003-session-server-and-client.md).
 
 ## Tests
 
