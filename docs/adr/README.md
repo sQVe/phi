@@ -24,3 +24,4 @@ decision replaces it, change its status to Superseded with a link to the replace
 - [0001: Documentation scope](./0001-documentation-scope.md)
 - [0002: Bun as runtime, package manager, test runner, and PTY](./0002-bun-runtime-and-pty.md)
 - [0003: One parser per pane in the server, drawing in the client](./0003-session-server-and-client.md)
+- [0004: libghostty-vt through bun:ffi and a thin C shim](./0004-libghostty-vt.md)
