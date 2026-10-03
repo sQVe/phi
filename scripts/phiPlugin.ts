@@ -292,7 +292,7 @@ const phiPlugin: Plugin = {
           builtin: 'Module "{{importer}}" must not import the runtime built-in "{{target}}".',
           renderer: 'Module "{{importer}}" must not import the renderer package "{{target}}".',
           dynamic:
-            'Module "{{importer}}" has a computed dynamic import. Use a string literal so its boundary can be checked.',
+            'Module "{{importer}}" has a computed dynamic import or `require()`. Use a string literal so its boundary can be checked.',
         },
       },
       create(context) {
@@ -361,6 +361,22 @@ const phiPlugin: Plugin = {
           }
         };
 
+        const checkLoaded = (node: ESTree.Node, source: ESTree.Argument) => {
+          const specifier = source.type === 'SpreadElement' ? undefined : literalSourceOf(source);
+
+          if (specifier === undefined) {
+            context.report({ node, messageId: 'dynamic', data: { importer } });
+
+            return;
+          }
+
+          const messageId = boundaryOf(specifier, false);
+
+          if (messageId !== undefined) {
+            context.report({ node, messageId, data: { importer, target: specifier } });
+          }
+        };
+
         return {
           ImportDeclaration: checkSource,
           ExportNamedDeclaration: checkSource,
@@ -368,19 +384,20 @@ const phiPlugin: Plugin = {
           TSImportType(node) {
             check(node.source, true);
           },
-          ImportExpression(node) {
-            const specifier = literalSourceOf(node.source);
-
-            if (specifier === undefined) {
-              context.report({ node, messageId: 'dynamic', data: { importer } });
-
-              return;
+          TSImportEqualsDeclaration(node) {
+            if (node.moduleReference.type === 'TSExternalModuleReference') {
+              check(node.moduleReference.expression, node.importKind === 'type');
             }
+          },
+          ImportExpression(node) {
+            checkLoaded(node, node.source);
+          },
+          CallExpression(node) {
+            const [source] = node.arguments;
+            const requireCall = node.callee.type === 'Identifier' && node.callee.name === 'require';
 
-            const messageId = boundaryOf(specifier, false);
-
-            if (messageId !== undefined) {
-              context.report({ node, messageId, data: { importer, target: specifier } });
+            if (requireCall && source !== undefined) {
+              checkLoaded(node, source);
             }
           },
         };

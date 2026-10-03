@@ -434,6 +434,21 @@ it.each(['lint', 'style:check'])(
         ],
         3,
       ],
+      [
+        'src/client/required.ts',
+        [
+          "const name = 'helper';",
+          "export const refused = require('../server/server.ts');",
+          'export const computed = require(name);',
+          "export const allowed = require('./client.ts');",
+          "import server = require('../server/server.ts');",
+          "import type Store = require('../store/store.ts');",
+          "import client = require('./client.ts');",
+          'export const imported = [server, client];',
+          'export type Imported = Store;',
+        ],
+        4,
+      ],
       ['src/client/directory.ts', ["export * from '.';"], 1],
       [
         'src/client/fileUrls.ts',
