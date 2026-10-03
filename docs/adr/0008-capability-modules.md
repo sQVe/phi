@@ -35,6 +35,8 @@ import which.
   public entry file named after the folder, such as `store/store.ts`. Other files in the folder are
   private to the module.
 - Flat modules: `ids.ts`, `invariant.ts`, `layout.ts`, `index.ts`.
+- The import table and file privacy apply only to files in `src/`. Tests and scripts outside `src/`
+  may import any module file.
 - A file outside these modules is an error. A new module starts as a flat file. It becomes a folder
   when it needs a second source file.
 
