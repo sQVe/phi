@@ -38,7 +38,7 @@ built with `bun build --compile`.
 ### PTYs
 
 - Phi spawns each pane's process with `Bun.spawn` and its `terminal` option. Do not add node-pty or
-  another PTY package.
+  another PTY package. Lint refuses imports of node-pty and its forks.
 
 ### Platforms and releases
 
