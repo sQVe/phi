@@ -12,7 +12,7 @@ export default defineConfig({
         {
           patterns: [
             {
-              regex: '(^|[/@])node-pty([-/]|$)',
+              regex: '^(@[^/]+/)?node-pty([-/]|$)',
               message: 'Spawn pane processes with `Bun.spawn` and its `terminal` option.',
             },
           ],
