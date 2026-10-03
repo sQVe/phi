@@ -41,6 +41,8 @@ the next state and typed changes. The server keeps no event log.
 - Effects, such as spawning a PTY, run outside the store.
 - An effect reports its result as a fact tagged with the generation it started from. The store
   ignores a fact whose generation is no longer current.
+- When the store ignores a fact, the code that ran the effect disposes of any resource it created,
+  such as a spawned process and its PTY.
 
 ### Runtime registry
 
