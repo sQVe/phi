@@ -2,8 +2,14 @@ import { expect, it, onTestFinished } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+
+interface Edge {
+  name: string;
+  source: string;
+  refused: boolean;
+}
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 
@@ -503,3 +509,127 @@ it.each(['lint', 'style:check'])(
   },
   30_000,
 );
+
+const moduleEntries = {
+  ids: 'src/ids.ts',
+  invariant: 'src/invariant.ts',
+  vt: 'src/vt/vt.ts',
+  rows: 'src/rows/rows.ts',
+  layout: 'src/layout.ts',
+  store: 'src/store/store.ts',
+  protocol: 'src/protocol/protocol.ts',
+  server: 'src/server/server.ts',
+  client: 'src/client/client.ts',
+  ui: 'src/ui/ui.tsx',
+  index: 'src/index.ts',
+};
+
+type ModuleName = keyof typeof moduleEntries;
+
+const moduleNames = Object.keys(moduleEntries) as ModuleName[];
+
+// Written out rather than read from the rule, so an extra edge in the rule fails the test.
+const allowedEdges: Record<ModuleName, ModuleName[]> = {
+  ids: [],
+  invariant: [],
+  vt: ['invariant'],
+  rows: ['ids', 'invariant'],
+  layout: ['ids', 'invariant'],
+  store: ['ids', 'invariant', 'layout'],
+  protocol: ['ids', 'invariant', 'rows'],
+  server: ['ids', 'invariant', 'vt', 'rows', 'layout', 'store', 'protocol'],
+  client: ['ids', 'invariant', 'rows', 'protocol'],
+  ui: ['ids', 'invariant', 'client'],
+  index: [
+    'ids',
+    'invariant',
+    'vt',
+    'rows',
+    'layout',
+    'store',
+    'protocol',
+    'server',
+    'client',
+    'ui',
+  ],
+};
+
+const typeOnlyEdges: Partial<Record<ModuleName, ModuleName[]>> = { protocol: ['store'] };
+
+const isRefused = (importer: ModuleName, target: ModuleName, typeOnly: boolean): boolean => {
+  const allowed = allowedEdges[importer].includes(target);
+  const typeOnlyAllowed = typeOnly && typeOnlyEdges[importer]?.includes(target) === true;
+
+  return !allowed && !typeOnlyAllowed;
+};
+
+// One line per import, so a diagnostic's line number names the edge it refuses.
+const edgesOf = (importer: ModuleName): Edge[] =>
+  moduleNames
+    .filter((target) => target !== importer)
+    .flatMap((target) => {
+      const path = relative(dirname(moduleEntries[importer]), moduleEntries[target]);
+      const specifier = path.startsWith('.') ? path : `./${path}`;
+
+      return [
+        {
+          name: `${importer} -> ${target}`,
+          source: `import '${specifier}';`,
+          refused: isRefused(importer, target, false),
+        },
+        {
+          name: `${importer} -> type ${target}`,
+          source: `import type {} from '${specifier}';`,
+          refused: isRefused(importer, target, true),
+        },
+      ];
+    });
+
+it('refuses every module edge outside the import table', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'phi-module-table-'));
+  onTestFinished(() => rm(directory, { recursive: true, force: true }));
+
+  await writeFile(join(directory, 'package.json'), '{}\n');
+
+  for (const importer of moduleNames) {
+    const path = join(directory, moduleEntries[importer]);
+    const sources = edgesOf(importer).map((edge) => edge.source);
+
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, `${[...sources, 'export {};'].join('\n')}\n`);
+  }
+
+  const result = spawnSync(process.execPath, ['run', 'lint', directory, ...unixFormat], {
+    cwd: root,
+    encoding: 'utf8',
+    timeout: 20_000,
+  });
+
+  // The linter prints a path relative to its working directory when the file sits below it.
+  const edgeOf = (diagnostic: string): string => {
+    const [, path = '', line = '0'] = diagnostic.match(/^(.+?):(\d+):\d+:/) ?? [];
+
+    const importer = moduleNames.find(
+      (name) => resolve(root, path) === join(directory, moduleEntries[name]),
+    );
+
+    return importer === undefined
+      ? diagnostic
+      : (edgesOf(importer)[Number(line) - 1]?.name ?? diagnostic);
+  };
+
+  const refused = result.stdout
+    .split('\n')
+    .filter((line) => line.includes('phi(module-boundaries)'))
+    .map(edgeOf);
+
+  const expected = moduleNames.flatMap((importer) =>
+    edgesOf(importer)
+      .filter((edge) => edge.refused)
+      .map((edge) => edge.name),
+  );
+
+  expect(result.error).toBeUndefined();
+  expect(result.status).toBe(1);
+  expect(refused.toSorted()).toEqual(expected.toSorted());
+}, 30_000);
