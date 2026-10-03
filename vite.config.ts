@@ -5,7 +5,20 @@ export default defineConfig({
   lint: {
     extends: [lint],
     jsPlugins: ['./scripts/phiPlugin.ts'],
-    rules: { 'phi/module-boundaries': 'error' },
+    rules: {
+      'phi/module-boundaries': 'error',
+      'eslint/no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              regex: '(^|[/@])node-pty([-/]|$)',
+              message: 'Spawn pane processes with `Bun.spawn` and its `terminal` option.',
+            },
+          ],
+        },
+      ],
+    },
   },
   fmt: {
     ...format,
