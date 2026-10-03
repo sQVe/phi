@@ -269,7 +269,7 @@ const importSourceOf = (variable: Variable | undefined): string | undefined => {
     : undefined;
 };
 
-const phiPlugin: Plugin = {
+const lintRules: Plugin = {
   meta: { name: 'phi' },
   rules: {
     'module-boundaries': {
@@ -476,4 +476,4 @@ const phiPlugin: Plugin = {
   },
 };
 
-export default phiPlugin;
+export default lintRules;

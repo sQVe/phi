@@ -41,7 +41,7 @@ Phi and Zeta share one project base. A change to a shared file is made in both r
 
 ### What stays local
 
-- Project rules live in one local lint plugin, `scripts/phiPlugin.ts`, and in `vite.config.ts` rules
+- Project rules live in one local lint plugin, `scripts/lintRules.ts`, and in `vite.config.ts` rules
   that refer to it or to Phi's own dependencies.
 - Runtime dependencies, ADRs after 0001, and the architecture section of `AGENTS.md` belong to each
   project.

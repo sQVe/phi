@@ -6,7 +6,7 @@ const effectsMessage = 'Read state with `useSyncExternalStore` and send intents.
 export default defineConfig({
   lint: {
     extends: [lint, react],
-    jsPlugins: ['./scripts/phiPlugin.ts'],
+    jsPlugins: ['./scripts/lintRules.ts'],
     rules: {
       'phi/module-boundaries': 'error',
       'phi/throw-only-in-invariant': 'error',

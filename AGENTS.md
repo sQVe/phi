@@ -6,7 +6,7 @@ Terminal multiplexer with a session server and a terminal client. Read
 - Run `bun run check` before finishing changes. It runs typechecking, lint with house style,
   formatting, Knip, and tests.
 - Format with `bun run format`, and fix style with `bun run style:fix`. House style comes from
-  `@sqve/seam`; Phi's own lint rules live in `scripts/phiPlugin.ts`.
+  `@sqve/seam`; Phi's own lint rules live in `scripts/lintRules.ts`.
 - Follow the decisions in [docs/adr](docs/adr/README.md), and record new decisions there. Read that
   guide before adding an ADR. Do not write documents that explain how a feature works; see
   [ADR 0001](docs/adr/0001-documentation-scope.md).
@@ -50,7 +50,7 @@ Terminal multiplexer with a session server and a terminal client. Read
   outside `src/` may import any module file. Flat modules are `ids.ts`, `invariant.ts`, `layout.ts`,
   and `index.ts`. See [ADR 0008](docs/adr/0008-capability-modules.md).
 - Imports follow the table in ADR 0008. `phi/module-boundaries` enforces it in ordinary lint. Do not
-  silence it; change the table in `scripts/phiPlugin.ts` when a new edge keeps the ADR's directions.
+  silence it; change the table in `scripts/lintRules.ts` when a new edge keeps the ADR's directions.
 - Put types beside the code that owns them. Do not add barrels, a shared `types.ts`, or `utils/`.
   Extract shared code only for two existing consumers.
 
