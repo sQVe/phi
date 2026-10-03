@@ -5,7 +5,8 @@ Terminal multiplexer with a session server and a terminal client. Read
 
 - Run `bun run check` before finishing changes. It runs typechecking, lint with house style,
   formatting, Knip, and tests.
-- Format with `bun run format`; configuration lives in `vite.config.ts`.
+- Format with `bun run format`, and fix style with `bun run style:fix`. House style comes from
+  `@sqve/seam`; Phi's own lint rules live in `scripts/phiPlugin.ts`.
 - Name values in camelCase and types in PascalCase. Never SCREAMING_CASE, not even for module
   constants.
 - Declare a helper before the code that uses it. Join at most three checks in one condition, and do
@@ -18,7 +19,15 @@ Terminal multiplexer with a session server and a terminal client. Read
 
 ## Tests
 
-- Test behavior a caller can observe. Do not test wording, constants, types, or internal calls.
-- Keep tests next to source. Cross-module and tooling checks go in `tests/`.
-- Use temporary directories for fixtures and remove them when the test finishes.
+Keep tests fast so the full suite stays practical as coverage grows.
+
+- Test behavior a caller can observe. Do not test wording, constants, types, removed features, or
+  internal calls. Assert exact bytes only where another program parses them.
+- Keep unit tests next to source. Cross-module, PTY, and tooling checks go in `tests/`.
+- Use real PTYs, libghostty-vt, sockets, and the filesystem where those boundaries matter. Otherwise
+  avoid subprocesses and test the pure modules directly.
+- Fake timers, `Date`, and `performance` together, and use explicit signals for async work. Use real
+  time only when elapsed time is the behavior.
+- Use temporary directories for fixtures and remove them when the test finishes. Keep mutable
+  fixtures isolated.
 - Never drop assertions or failure cases to save time.
