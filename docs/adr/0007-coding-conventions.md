@@ -35,6 +35,7 @@ boundary, with zod.
   panes or clients.
 - `invariant(condition, message)` checks states that must be impossible. It runs in every build.
   Never use it to check input.
+- Lint refuses `throw` in `src/` outside `invariant.ts`. Test files are exempt.
 
 ### Boundaries
 
@@ -51,6 +52,9 @@ boundary, with zod.
 - Use a class only for a resource Phi owns that needs a dispose step, such as a libghostty-vt
   handle, a PTY, a connection, or an OpenTUI renderable.
 - Do not use inheritance, except where OpenTUI requires it.
+- Lint refuses a class in `src/` without a dispose method. It also refuses `extends` unless the base
+  class is imported from an `@opentui/` package. OpenTUI subclasses use OpenTUI's lifecycle and need
+  no dispose method.
 
 ### Names
 
@@ -61,7 +65,8 @@ boundary, with zod.
 
 - Prefer Bun built-ins to packages.
 - Add a runtime dependency only with a stated reason. A core dependency needs an ADR.
-- Pin every dependency to an exact version.
+- Pin every dependency to an exact version. A test refuses other versions in `package.json`, and
+  `bunfig.toml` makes `bun add` write exact versions.
 
 ## Tradeoffs
 
