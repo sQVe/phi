@@ -30,3 +30,4 @@ decision replaces it, change its status to Superseded with a link to the replace
 - [0007: Results for expected failures, exceptions for bugs, and checked boundaries](./0007-coding-conventions.md)
 - [0008: Capability modules with an enforced import table](./0008-capability-modules.md)
 - [0009: One project base shared with Zeta](./0009-shared-project-base.md)
+- [0010: Every UI feature has a CLI equal](./0010-cli-parity.md)
