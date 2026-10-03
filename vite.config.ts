@@ -21,8 +21,9 @@ export default defineConfig({
           paths: [
             {
               name: 'react',
-              importNames: ['useEffect', 'useLayoutEffect'],
-              message: effectsMessage,
+              // A default import would let `alias.useEffect` pass the property check below.
+              importNames: ['default', 'useEffect', 'useLayoutEffect'],
+              message: `${effectsMessage} Import other React hooks by name.`,
             },
           ],
         },
