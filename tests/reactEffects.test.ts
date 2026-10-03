@@ -29,13 +29,19 @@ it.each(['lint', 'style:check'])(
         ],
         3,
       ],
+      ['member.ts', ['export const hooks = [React.useEffect, React.useLayoutEffect];'], 2],
       [
-        'member.ts',
+        'default.ts',
+        ["import R from 'react';", 'export const hooks = [R.useEffect, R.useLayoutEffect];'],
+        1,
+      ],
+      [
+        'namespace.ts',
         [
-          "import React from 'react';",
-          'export const hooks = [React.useEffect, React.useLayoutEffect];',
+          "import * as react from 'react';",
+          'export const hooks = [react.useEffect, react.useLayoutEffect];',
         ],
-        2,
+        1,
       ],
       [
         'allowed.ts',
