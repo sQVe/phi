@@ -37,19 +37,10 @@ Terminal multiplexer with a session server and a terminal client. Read
 - Change server state only through the store's pure transitions. Run effects outside the store and
   report results as generation-tagged facts. Keep PTYs, parsers, sockets, and terminal cells out of
   state, in the runtime registry. See [ADR 0006](docs/adr/0006-server-state-store.md).
-- Return a typed result with a reason for an expected failure. Throw only for bugs. Use
-  `invariant(condition, message)` for states that must be impossible, never for input. See
-  [ADR 0007](docs/adr/0007-coding-conventions.md).
-- Parse untrusted data once with zod where it enters, and pass trusted types inward. Construct each
-  branded id, such as `PaneId`, with its one constructor.
-- Write pure, immutable code. Only the libghostty-vt bindings, row encoding, the row cache, and pane
-  drawing may reuse buffers and mutate typed arrays.
-- Use a class only for an owned resource with a dispose step. Do not use inheritance unless OpenTUI
-  requires it.
-- Name files and folders in camelCase. A file named after the React component or class it exports
-  may use PascalCase.
-- Prefer Bun built-ins. Add a runtime dependency only with a stated reason and an exact version; a
-  core dependency needs an ADR.
+- Follow the error, boundary, mutation, class, naming, and dependency conventions in
+  [ADR 0007](docs/adr/0007-coding-conventions.md). Before designing, know two of them: return a
+  typed result for an expected failure and throw only for bugs, and parse untrusted data once with
+  zod where it enters.
 
 ## Tests
 
