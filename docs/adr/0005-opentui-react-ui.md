@@ -36,8 +36,8 @@ that React does not render.
 
 - React is a view only. Components read client state with `useSyncExternalStore` and send intents
   out.
-- Do not move data with `useEffect`. Effects only connect to outside systems, such as subscribing to
-  a store.
+- Lint refuses `useEffect` and `useLayoutEffect`. An effect that connects to an outside system needs
+  a lint disable comment that gives its reason.
 
 ## Tradeoffs
 

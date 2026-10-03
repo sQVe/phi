@@ -31,7 +31,8 @@ Terminal multiplexer with a session server and a terminal client. Read
   upstream link, and bump the Ghostty pin in its own PR. See
   [ADR 0004](docs/adr/0004-libghostty-vt.md).
 - Draw panes with the custom pane renderable, never through React. React components read state with
-  `useSyncExternalStore` and send intents; do not move data with `useEffect`. See
+  `useSyncExternalStore` and send intents. Lint refuses `useEffect`; an effect that connects to an
+  outside system needs a disable comment with its reason. See
   [ADR 0005](docs/adr/0005-opentui-react-ui.md).
 
 ## Tests
