@@ -10,6 +10,8 @@
   it can be trusted until it is parsed.
 - Most code transforms data, but a few hot paths parse and draw terminal output on every keystroke.
 - Agents write much of the code, so the conventions must be explicit and easy to check in review.
+- Some values own resources, such as a PTY or a libghostty-vt handle, that must be released exactly
+  once. Everything else is data and functions over it.
 - Phi ships one compiled binary, so every runtime dependency ships to every user. A version range
   would let a rebuild pick up new dependency code that nobody reviewed.
 
@@ -23,6 +25,9 @@
   silently and fail later, far from its cause.
 - Add packages freely with version ranges. Rejected: each package adds size and supply-chain risk to
   the binary, and a range can change shipped code without review.
+- Classes as the main unit of code, with inheritance for shared behavior. Rejected: state and
+  behavior mix, so code is harder to test without real resources, and base classes couple unrelated
+  modules.
 - Typed results for expected failures, exceptions for bugs, always-on invariants, and parsing at
   every boundary. Chosen: expected failures are part of each signature, and bugs fail where they
   happen.
@@ -81,3 +86,5 @@ boundary, with zod.
 - Cost: always-on invariants run in release builds, so they must stay cheap.
 - Cost: zod is a runtime dependency that every boundary relies on.
 - Cost: the list of hot-path modules must be kept up to date, or mutation spreads beyond it.
+- Cost: behavior that would sit on a class lives in module functions, so a reader finds a value's
+  operations by its module, not its type.
