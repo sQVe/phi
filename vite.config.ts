@@ -1,9 +1,11 @@
-import { format, lint } from '@sqve/seam';
+import { format, lint, react } from '@sqve/seam';
 import { defineConfig } from 'vite-plus';
+
+const effectsMessage = 'Read state with `useSyncExternalStore` and send intents.';
 
 export default defineConfig({
   lint: {
-    extends: [lint],
+    extends: [lint, react],
     jsPlugins: ['./scripts/phiPlugin.ts'],
     rules: {
       'phi/module-boundaries': 'error',
@@ -16,7 +18,19 @@ export default defineConfig({
               message: 'Spawn pane processes with `Bun.spawn` and its `terminal` option.',
             },
           ],
+          paths: [
+            {
+              name: 'react',
+              importNames: ['useEffect', 'useLayoutEffect'],
+              message: effectsMessage,
+            },
+          ],
         },
+      ],
+      'eslint/no-restricted-properties': [
+        'error',
+        { object: 'React', property: 'useEffect', message: effectsMessage },
+        { object: 'React', property: 'useLayoutEffect', message: effectsMessage },
       ],
     },
   },
