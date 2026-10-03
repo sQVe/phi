@@ -10,6 +10,7 @@ const dependencyFields = [
   'devDependencies',
   'optionalDependencies',
   'peerDependencies',
+  'overrides',
 ];
 
 const exactVersion = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/;
