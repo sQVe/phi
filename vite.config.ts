@@ -9,6 +9,8 @@ export default defineConfig({
     jsPlugins: ['./scripts/phiPlugin.ts'],
     rules: {
       'phi/module-boundaries': 'error',
+      'phi/throw-only-in-invariant': 'error',
+      'phi/class-owns-resource': 'error',
       'eslint/no-restricted-imports': [
         'error',
         {

@@ -3,7 +3,7 @@ import { isBuiltin } from 'node:module';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { ESTree, Plugin } from '@oxlint/plugins';
+import type { ESTree, Plugin, Scope, Variable } from '@oxlint/plugins';
 
 interface ModuleLocation {
   module: string;
@@ -45,6 +45,27 @@ const packageRootOf = (directory: string): string | undefined => {
 
 const escapesDirectory = (path: string): boolean =>
   path === '..' || path.startsWith(`..${sep}`) || isAbsolute(path);
+
+const sourceDirectoryOf = (filename: string): string | undefined => {
+  const root = packageRootOf(dirname(filename));
+
+  return root === undefined ? undefined : join(root, 'src');
+};
+
+// Returns the path relative to `src/`, or `undefined` for a file outside it.
+const sourcePathOf = (filename: string): string | undefined => {
+  const sourceDirectory = sourceDirectoryOf(filename);
+
+  if (sourceDirectory === undefined) {
+    return undefined;
+  }
+
+  const path = relative(sourceDirectory, filename);
+
+  return escapesDirectory(path) ? undefined : path;
+};
+
+const isTestFile = (filename: string): boolean => /\.test\.tsx?$/.test(filename);
 
 const locate = (path: string): ModuleLocation | undefined => {
   const segments = path.replace(/\.[jt]sx?$/, '').split(sep);
@@ -170,6 +191,59 @@ const literalSourceOf = (source: ESTree.Expression): string | undefined => {
   return source.quasis[0]?.value.cooked ?? undefined;
 };
 
+const disposeSymbols = new Set(['dispose', 'asyncDispose']);
+
+const isSymbolDispose = (key: ESTree.PropertyKey): boolean => {
+  if (key.type !== 'MemberExpression' || key.computed) {
+    return false;
+  }
+
+  const symbolObject = key.object.type === 'Identifier' && key.object.name === 'Symbol';
+
+  return symbolObject && disposeSymbols.has(key.property.name);
+};
+
+const isDisposeKey = (member: ESTree.MethodDefinition): boolean => {
+  if (member.computed) {
+    return isSymbolDispose(member.key);
+  }
+
+  return member.key.type === 'Identifier' && member.key.name === 'dispose';
+};
+
+const isDisposeMethod = (member: ESTree.ClassElement): boolean => {
+  if (member.type !== 'MethodDefinition') {
+    return false;
+  }
+
+  const instanceMethod = member.kind === 'method' && !member.static;
+
+  return instanceMethod && isDisposeKey(member);
+};
+
+const rootIdentifierOf = (expression: ESTree.Expression): string | undefined => {
+  if (expression.type === 'Identifier') {
+    return expression.name;
+  }
+
+  return expression.type === 'MemberExpression' ? rootIdentifierOf(expression.object) : undefined;
+};
+
+const variableOf = (scope: Scope | null, name: string): Variable | undefined =>
+  scope === null ? undefined : (scope.set.get(name) ?? variableOf(scope.upper, name));
+
+const importSourceOf = (variable: Variable | undefined): string | undefined => {
+  const [definition] = variable?.defs ?? [];
+
+  if (definition?.type !== 'ImportBinding') {
+    return undefined;
+  }
+
+  return definition.parent?.type === 'ImportDeclaration'
+    ? definition.parent.source.value
+    : undefined;
+};
+
 const phiPlugin: Plugin = {
   meta: { name: 'phi' },
   rules: {
@@ -198,8 +272,7 @@ const phiPlugin: Plugin = {
       },
       create(context) {
         const filename = context.physicalFilename;
-        const root = packageRootOf(dirname(filename));
-        const sourceDirectory = root === undefined ? undefined : join(root, 'src');
+        const sourceDirectory = sourceDirectoryOf(filename);
 
         if (sourceDirectory === undefined) {
           return {};
@@ -223,7 +296,7 @@ const phiPlugin: Plugin = {
           };
         }
 
-        const testFile = /\.test\.tsx?$/.test(filename);
+        const testFile = isTestFile(filename);
 
         const boundaryOf = (specifier: string, typeOnly: boolean): string | undefined => {
           const localPath = localPathOf(specifier, dirname(filename));
@@ -286,6 +359,76 @@ const phiPlugin: Plugin = {
             }
           },
         };
+      },
+    },
+    'throw-only-in-invariant': {
+      meta: {
+        type: 'problem',
+        schema: [],
+        messages: {
+          throw:
+            'Throw only in `src/invariant.ts`. Return a typed result for an expected failure, or call `invariant` for a bug.',
+        },
+      },
+      create(context) {
+        const filename = context.physicalFilename;
+        const path = sourcePathOf(filename);
+        const exempt = path === undefined || path === 'invariant.ts' || isTestFile(filename);
+
+        if (exempt) {
+          return {};
+        }
+
+        return {
+          ThrowStatement(node) {
+            context.report({ node, messageId: 'throw' });
+          },
+        };
+      },
+    },
+    'class-owns-resource': {
+      meta: {
+        type: 'problem',
+        schema: [],
+        messages: {
+          dispose:
+            'A class must own a resource and declare `dispose()`, `[Symbol.dispose]()`, or `[Symbol.asyncDispose]()`, or extend an OpenTUI class. Use functions otherwise.',
+          inheritance: 'A class may extend only a base class imported from an `@opentui/` package.',
+        },
+      },
+      create(context) {
+        if (sourcePathOf(context.physicalFilename) === undefined) {
+          return {};
+        }
+
+        const extendsOpenTui = (node: ESTree.Class, superClass: ESTree.Expression): boolean => {
+          const name = rootIdentifierOf(superClass);
+
+          if (name === undefined) {
+            return false;
+          }
+
+          const variable = variableOf(context.sourceCode.getScope(node), name);
+
+          return importSourceOf(variable)?.startsWith('@opentui/') === true;
+        };
+
+        // An OpenTUI renderable ends its lifetime through OpenTUI's own `destroy()`.
+        const check = (node: ESTree.Class) => {
+          if (node.superClass !== null && extendsOpenTui(node, node.superClass)) {
+            return;
+          }
+
+          if (node.superClass !== null) {
+            context.report({ node: node.superClass, messageId: 'inheritance' });
+          }
+
+          if (!node.body.body.some(isDisposeMethod)) {
+            context.report({ node, messageId: 'dispose' });
+          }
+        };
+
+        return { ClassDeclaration: check, ClassExpression: check };
       },
     },
   },
