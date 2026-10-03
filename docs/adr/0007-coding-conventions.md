@@ -10,6 +10,8 @@
   it can be trusted until it is parsed.
 - Most code transforms data, but a few hot paths parse and draw terminal output on every keystroke.
 - Agents write much of the code, so the conventions must be explicit and easy to check in review.
+- Phi ships one compiled binary, so every runtime dependency ships to every user. A version range
+  would let a rebuild pick up new dependency code that nobody reviewed.
 
 ## Options considered
 
@@ -19,6 +21,8 @@
   through every caller, and a bug would read like an expected outcome.
 - Assertions that run only in development builds. Rejected: a broken state in a release would go on
   silently and fail later, far from its cause.
+- Add packages freely with version ranges. Rejected: each package adds size and supply-chain risk to
+  the binary, and a range can change shipped code without review.
 - Typed results for expected failures, exceptions for bugs, always-on invariants, and parsing at
   every boundary. Chosen: expected failures are part of each signature, and bugs fail where they
   happen.
