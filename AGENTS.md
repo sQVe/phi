@@ -46,8 +46,7 @@ Terminal multiplexer with a session server and a terminal client. Read
   `store/store.ts`. Other files in the folder are private. Flat modules are `ids.ts`,
   `invariant.ts`, `layout.ts`, and `index.ts`. See [ADR 0008](docs/adr/0008-capability-modules.md).
 - Imports follow the table in ADR 0008. `phi/module-boundaries` enforces it in ordinary lint. Do not
-  silence it; change the table in `scripts/stylePlugin.ts` when a new edge keeps the ADR's
-  directions.
+  silence it; change the table in `scripts/phiPlugin.ts` when a new edge keeps the ADR's directions.
 - Put types beside the code that owns them. Do not add barrels, a shared `types.ts`, or `utils/`.
   Extract shared code only for two existing consumers.
 
