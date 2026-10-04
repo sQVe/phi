@@ -1,6 +1,6 @@
 export interface TerminalSize {
-  columns: number;
-  rows: number;
+  readonly columns: number;
+  readonly rows: number;
 }
 
 const detachedSize: TerminalSize = { columns: 80, rows: 24 };
