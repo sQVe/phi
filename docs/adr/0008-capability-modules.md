@@ -59,6 +59,8 @@ import which.
 - `ids`, `invariant`, `rows`, `layout`, and `store` import no Node or Bun built-ins.
 - Only `ui` and `index` import React or OpenTUI packages.
 - Type imports count as dependencies. Dynamic imports must use a literal path.
+- A module may import a file outside `src/` only when the binary embeds it and the rule lists it:
+  `vt` imports `build/libphi-vt.so`, and `index` imports `package.json`.
 
 The rule holds the exact table. A change that keeps these directions updates the rule. A new module,
 such as the command catalog or config, joins the table with the ADR that introduces it. A change
