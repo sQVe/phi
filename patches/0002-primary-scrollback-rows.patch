@@ -9,7 +9,7 @@ the active screen. This key reads the primary screen's scrollback rows on
 either screen, so the numbers do not depend on where the PTY output is
 split into writes.
 
-Upstream: https://github.com/ghostty-org/ghostty/blob/83edd491e3024ae5e50393d62877b8897da1cccd/src/terminal/c/terminal.zig#L1839
+Upstream: https://github.com/ghostty-org/ghostty/discussions/14541
 
 --- a/include/ghostty/vt/terminal.h
 +++ b/include/ghostty/vt/terminal.h
