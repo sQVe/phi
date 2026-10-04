@@ -3,6 +3,8 @@ import { describe, expect, it } from 'bun:test';
 import type { Frame, StableRows, Terminal } from './vt.ts';
 import { CellFlag, CellWidth, cellWidthMask, cellWords, createTerminal, ModeFlag } from './vt.ts';
 
+type DecodedRows = Pick<Frame, 'cells' | 'graphemes' | 'rowCount'>;
+
 interface Cell {
   text: string;
   foreground: number;
@@ -51,7 +53,7 @@ const readClusters = (graphemes: Uint32Array) => {
   return clusters;
 };
 
-const readCell = (frame: Frame, clusters: Map<number, number[]>, index: number): Cell => {
+const readCell = (frame: DecodedRows, clusters: Map<number, number[]>, index: number): Cell => {
   const codePoint = frame.cells[index] ?? 0;
   const codePoints = clusters.get(index) ?? (codePoint === 0 ? [] : [codePoint]);
 
@@ -63,8 +65,8 @@ const readCell = (frame: Frame, clusters: Map<number, number[]>, index: number):
   };
 };
 
-// Decodes a frame into its rows, keyed by viewport row.
-const readRows = (frame: Frame, cols: number) => {
+// Decodes a frame or a row range into its rows, keyed by the word before each row.
+const decodeRows = (frame: DecodedRows, cols: number) => {
   const clusters = readClusters(frame.graphemes);
   const rowWords = 1 + cols * cellWords;
 
@@ -92,6 +94,9 @@ const rowText = (cells: Cell[]) =>
     .map((cell) => (cell.text === '' ? ' ' : cell.text))
     .join('')
     .trimEnd();
+
+const rowTexts = (rows: DecodedRows, cols = 80) =>
+  [...decodeRows(rows, cols).values()].map((cells) => rowText(cells));
 
 const cursorAtLastColumn = '\u001B[1;80Hx\u001B[6n';
 const cursorAtBottomRight = '\u001B[999;999H\u001B[6n';
@@ -256,7 +261,7 @@ it('returns only the row a write changed', () => {
   terminal.frame();
   writeChunks(terminal, ['row three']);
 
-  const rows = readRows(terminal.frame(), 80);
+  const rows = decodeRows(terminal.frame(), 80);
 
   expect([...rows.keys()]).toEqual([3]);
   expect(rowText(rows.get(3) ?? [])).toBe('row three');
@@ -273,7 +278,7 @@ it.each([
 
   writeChunks(terminal, [`${style}S\u001B[0mT`]);
 
-  const [styled, plain] = readRows(terminal.frame(), 80).get(0) ?? [];
+  const [styled, plain] = decodeRows(terminal.frame(), 80).get(0) ?? [];
 
   expect(styled).toEqual({ text: 'S', foreground: 0, background: 0, flags: flag });
   expect(plain).toEqual({ text: 'T', foreground: 0, background: 0, flags: 0 });
@@ -284,7 +289,7 @@ it('returns 256-color and 24-bit foreground colors', () => {
 
   writeChunks(terminal, ['\u001B[38;5;196mP\u001B[38;2;10;20;30mR']);
 
-  const [palette, rgb] = readRows(terminal.frame(), 80).get(0) ?? [];
+  const [palette, rgb] = decodeRows(terminal.frame(), 80).get(0) ?? [];
 
   expect(palette).toEqual({ text: 'P', foreground: 197, background: 0, flags: 0 });
 
@@ -301,7 +306,7 @@ it('returns a wide character as a wide cell followed by a spacer cell', () => {
 
   writeChunks(terminal, ['漢']);
 
-  const [wide, spacer] = readRows(terminal.frame(), 80).get(0) ?? [];
+  const [wide, spacer] = decodeRows(terminal.frame(), 80).get(0) ?? [];
 
   expect(wide?.text).toBe('漢');
   expect(widthOf(wide)).toBe('wide');
@@ -317,7 +322,7 @@ it.each([
 
   writeChunks(terminal, [`\u001B[?2027h${cluster}x`]);
 
-  const cells = readRows(terminal.frame(), 80).get(0) ?? [];
+  const cells = decodeRows(terminal.frame(), 80).get(0) ?? [];
 
   expect(cells[0]?.text).toBe(cluster);
   expect((cells[0]?.flags ?? 0) & CellFlag.grapheme).toBe(CellFlag.grapheme);
@@ -331,7 +336,7 @@ it('returns a whole screen of clusters that does not fit the first buffers', () 
   writeChunks(terminal, [cluster.repeat(80 * 24)]);
 
   const frame = terminal.frame();
-  const rows = readRows(frame, 80);
+  const rows = decodeRows(frame, 80);
   const expected = Array.from({ length: 24 }, (_, row) => [row, cluster.repeat(80)]);
 
   expect(frame.graphemes.length).toBe(80 * 24 * 4);
@@ -345,7 +350,7 @@ it('returns every row of a screen larger than the first buffers', () => {
 
   writeChunks(terminal, [row.repeat(60)]);
 
-  const rows = readRows(terminal.frame(), 200);
+  const rows = decodeRows(terminal.frame(), 200);
   const expected = Array.from({ length: 60 }, (_, index) => [index, row]);
 
   expect([...rows].map(([index, cells]) => [index, rowText(cells)])).toEqual(expected);
@@ -395,7 +400,7 @@ it('returns every row after markAllDirty', () => {
   terminal.frame();
   terminal.markAllDirty();
 
-  const rows = readRows(terminal.frame(), 80);
+  const rows = decodeRows(terminal.frame(), 80);
 
   expect([...rows.keys()]).toEqual(Array.from({ length: 24 }, (_, row) => row));
   expect(rowText(rows.get(0) ?? [])).toBe('hello');
@@ -575,4 +580,399 @@ it.each([
   ['a fractional', 0.5],
 ])('refuses %s scrollback limit', (_name, scrollbackBytes) => {
   expect(() => createTerminal(80, 24, scrollbackBytes)).toThrow();
+});
+
+it('reads a row that scrolled into history by its stable number', () => {
+  using terminal = openTerminal();
+  const { epoch } = terminal.stableRows();
+
+  terminal.write(encoder.encode(numberedLines(1, 50)));
+
+  const read = terminal.readRows(epoch, 0, 1);
+
+  expect(read.ok && rowTexts(read.rows)).toEqual(['line 1']);
+});
+
+// Rows from the oldest history row to the last screen row.
+const readAllRows = (terminal: Terminal) => {
+  const { epoch, first } = terminal.stableRows();
+  const read = terminal.readRows(epoch, first, 0xff_ff_ff_ff);
+
+  if (!read.ok) {
+    throw new Error(read.reason);
+  }
+
+  return read.rows;
+};
+
+const textLines = (terminal: Terminal) => terminal.text().split('\n');
+
+it('returns the same rows twice and leaves dirty rows for the next frame', () => {
+  using terminal = openTerminal();
+  using unread = openTerminal();
+
+  for (const each of [terminal, unread]) {
+    each.write(encoder.encode(numberedLines(0, 40)));
+    each.frame();
+    each.write(encoder.encode('\u001B[5;1Hchanged'));
+  }
+
+  const { epoch, first } = terminal.stableRows();
+  const once = terminal.readRows(epoch, first, 100);
+  const twice = terminal.readRows(epoch, first, 100);
+  const rows = decodeRows(terminal.frame(), 80);
+
+  expect(once.ok && once.rows.rowCount).toBe(41);
+  expect(twice).toEqual(once);
+  expect(rows).toEqual(decodeRows(unread.frame(), 80));
+  expect(rowText(rows.get(4) ?? [])).toBe('changed');
+});
+
+it('reads a row from history with the cells the frame returned while it was on screen', () => {
+  using terminal = openTerminal();
+  const cluster = '\u{1F469}\u200D\u{1F4BB}';
+
+  terminal.write(
+    encoder.encode(
+      `\u001B[?2027h\u001B[1;38;5;196;48;2;10;20;30mred\u001B[0m 漢 ${cluster}e\u0301\r\n`,
+    ),
+  );
+
+  const { epoch, activeTop } = terminal.stableRows();
+  const onScreen = decodeRows(terminal.frame(), 80).get(0);
+
+  terminal.write(encoder.encode(numberedLines(0, 40)));
+
+  const read = terminal.readRows(epoch, activeTop, 1);
+  const fromHistory = read.ok ? decodeRows(read.rows, 80).get(0) : undefined;
+
+  expect(terminal.stableRows().first).toBe(activeTop);
+  expect(rowText(onScreen ?? [])).toBe(`red 漢 ${cluster}e\u0301`);
+  expect(fromHistory).toEqual(onScreen);
+});
+
+it('refuses a read with an epoch from before a resize and reads with the new epoch', () => {
+  using terminal = openTerminal();
+
+  terminal.write(encoder.encode(numberedLines(0, 40)));
+
+  const before = terminal.stableRows();
+
+  terminal.resize(60, 20);
+
+  const after = terminal.stableRows();
+  const read = terminal.readRows(after.epoch, after.first, 1);
+
+  expect(terminal.readRows(before.epoch, before.first, 1)).toEqual({
+    ok: false,
+    reason: 'staleEpoch',
+  });
+
+  expect(read.ok && rowTexts(read.rows, 60)).toEqual(['line 0']);
+});
+
+it('refuses a read of a pruned row and reads the oldest surviving row', () => {
+  using terminal = openTerminal(80, 24, 1);
+  const start = terminal.stableRows();
+
+  for (let line = 0; line < 20_000; line += 100) {
+    terminal.write(encoder.encode(numberedLines(line, 100)));
+    terminal.stableRows();
+  }
+
+  const { epoch, first } = terminal.stableRows();
+  const oldest = terminal.readRows(epoch, first, 1);
+
+  expect(terminal.readRows(epoch, first - 1, 2)).toEqual({ ok: false, reason: 'pruned' });
+  expect(oldest.ok && rowTexts(oldest.rows)).toEqual([`line ${first - start.first}`]);
+});
+
+it('reads the alternate screen by the primary active top and the history again after leaving it', () => {
+  using terminal = openTerminal();
+
+  terminal.write(encoder.encode(numberedLines(0, 40)));
+
+  const { epoch, first, activeTop } = terminal.stableRows();
+
+  terminal.write(encoder.encode('\u001B[?1049h\u001B[Halternate'));
+
+  const onAlternate = terminal.readRows(epoch, first, 1);
+  const alternateTop = terminal.readRows(epoch, activeTop, 1);
+
+  terminal.write(encoder.encode('\u001B[?1049l'));
+
+  const afterLeaving = terminal.readRows(epoch, first, 1);
+
+  expect(onAlternate).toEqual({ ok: false, reason: 'pruned' });
+  expect(alternateTop.ok && rowTexts(alternateTop.rows)).toEqual(['alternate']);
+  expect(afterLeaving.ok && rowTexts(afterLeaving.rows)).toEqual(['line 0']);
+});
+
+it('returns no rows past the last screen row', () => {
+  using terminal = openTerminal();
+  const { epoch, activeTop } = terminal.stableRows();
+
+  const read = terminal.readRows(epoch, activeTop + 24, 10);
+
+  expect(read.ok && read.rows.rowCount).toBe(0);
+});
+
+it('returns a range dense with clusters whole when it does not fit the first buffers', () => {
+  using terminal = openTerminal();
+  const clusters = 'e\u0301'.repeat(70);
+
+  const lines = Array.from(
+    { length: 120 },
+    (_, line) => `g${String(line).padStart(3, '0')} ${clusters}`,
+  );
+
+  terminal.write(encoder.encode(lines.map((line) => `${line}\r\n`).join('')));
+
+  const rows = readAllRows(terminal);
+
+  expect(rows.graphemes.length).toBe(120 * 70 * 4);
+  expect(rowTexts(rows).slice(0, 120)).toEqual(lines);
+});
+
+// A cell keeps at most 65 code points of a cluster and drops the rest; the next character still
+// goes to the next cell.
+it.each([
+  ['frame', (terminal: Terminal) => terminal.frame()],
+  ['row range', (terminal: Terminal) => readAllRows(terminal)],
+])('keeps 65 code points of a cluster in one cell through a %s', (_name, read) => {
+  using terminal = openTerminal();
+  const longest = `e${'\u0301'.repeat(64)}`;
+
+  terminal.write(encoder.encode(`${longest}x\r\n${longest}\u0301\u0301y`));
+
+  const rows = decodeRows(read(terminal), 80);
+  const [whole, wholeNext] = rows.get(0) ?? [];
+  const [kept, keptNext] = rows.get(1) ?? [];
+
+  expect(whole?.text).toBe(longest);
+  expect(wholeNext?.text).toBe('x');
+  expect(kept?.text).toBe(longest);
+  expect(keptNext?.text).toBe('y');
+});
+
+// A line as a program prints it: colored, with wide characters, and 15 to 74 columns long.
+const coloredLines = (count: number, prefix: string) =>
+  Array.from(
+    { length: count },
+    (_, line) =>
+      `\u001B[3${line % 8};4${(line + 3) % 8}m${prefix} ${line} 宽字 ${'x'.repeat(line % 60)}\u001B[0m\r\n`,
+  ).join('');
+
+// Writes in PTY-sized chunks so sequences cross write boundaries, and numbers rows after each.
+const writeAsPty = (terminal: Terminal, text: string) => {
+  const bytes = encoder.encode(text);
+
+  for (let offset = 0; offset < bytes.length; offset += 4093) {
+    terminal.write(bytes.subarray(offset, offset + 4093));
+    terminal.stableRows();
+  }
+};
+
+// Draws a full screen the way Neovim redraws: absolute moves, no scrolling.
+const fullScreenDraw = (rows: number, label: string) =>
+  Array.from(
+    { length: rows },
+    (_, row) =>
+      `\u001B[${row + 1};1H\u001B[1;3${(row + 1) % 8}m${label} ${row + 1}\u001B[K\u001B[0m`,
+  ).join('');
+
+const withoutTrailingBlanks = (lines: string[]) => lines.join('\n').trimEnd().split('\n');
+
+describe('reading history', () => {
+  it.each([
+    ['no history', 1_000_000, [coloredLines(10, 'line'), coloredLines(20, 'more')]],
+    ['history below the limit', 1_000_000, [coloredLines(100, 'line'), coloredLines(50, 'more')]],
+    ['history beyond the limit', 100_000, [coloredLines(2000, 'line'), coloredLines(200, 'more')]],
+    [
+      'a sequence split between writes',
+      100_000,
+      [`${coloredLines(2000, 'line')}\u001B[3`, `1mred\r\n${coloredLines(200, 'more')}`],
+    ],
+  ])('reads every row as the screen text with %s', (_name, scrollbackBytes, writes) => {
+    using terminal = openTerminal(78, 38, scrollbackBytes);
+
+    for (const text of writes) {
+      writeAsPty(terminal, text);
+    }
+
+    expect(withoutTrailingBlanks(rowTexts(readAllRows(terminal), 78))).toEqual(
+      withoutTrailingBlanks(textLines(terminal)),
+    );
+  });
+
+  it.each([
+    [
+      'a full alternate-screen redraw, its exit, and more output',
+      [
+        coloredLines(2000, 'line'),
+        `\u001B[?1049h\u001B[H\u001B[2J${fullScreenDraw(38, 'nvim')}`,
+        fullScreenDraw(38, 'redraw'),
+        '\u001B[?1049l',
+        coloredLines(200, 'more'),
+      ],
+    ],
+    [
+      'three resizes with output between them',
+      [
+        coloredLines(2000, 'line'),
+        [100, 30],
+        coloredLines(100, 'wide'),
+        [60, 45],
+        coloredLines(200, 'more'),
+        [78, 38],
+        coloredLines(50, 'last'),
+      ],
+    ],
+  ] as [string, (string | [number, number])[]][])(
+    'reads every row as the screen text after each step of %s',
+    (_name, steps) => {
+      using terminal = openTerminal(78, 38, 100_000);
+      let cols = 78;
+
+      const stages = steps.map((step) => {
+        if (typeof step === 'string') {
+          writeAsPty(terminal, step);
+        } else {
+          [cols] = step;
+          terminal.resize(...step);
+        }
+
+        return {
+          rows: withoutTrailingBlanks(rowTexts(readAllRows(terminal), cols)),
+          text: withoutTrailingBlanks(textLines(terminal)),
+        };
+      });
+
+      expect(stages.map((stage) => stage.rows)).toEqual(stages.map((stage) => stage.text));
+      expect(stages.every((stage) => stage.rows.length > 1)).toBe(true);
+    },
+  );
+
+  it('reads the row a write changed and scrolled into history in the same write', () => {
+    using terminal = openTerminal();
+
+    terminal.write(encoder.encode('OLD-CACHED-ROW'));
+
+    const { epoch, activeTop } = terminal.stableRows();
+
+    terminal.frame();
+    terminal.write(encoder.encode('\u001B[HNEW-HISTORY-ROW\u001B[24;1H\r\nFINISHED\r\n'));
+
+    const read = terminal.readRows(epoch, activeTop, 1);
+
+    expect(read.ok && rowTexts(read.rows)).toEqual(['NEW-HISTORY-ROW']);
+  });
+
+  it('reads reflowed history after narrowing, and after widening on the alternate screen', () => {
+    using terminal = openTerminal(78, 24);
+
+    const lines = Array.from(
+      { length: 200 },
+      (_, line) => `hist${String(line).padStart(3, '0')} ${'y'.repeat(52)}`,
+    );
+
+    writeAsPty(terminal, lines.map((line) => `${line}\r\n`).join(''));
+    terminal.resize(58, 24);
+
+    const narrow = rowTexts(readAllRows(terminal), 58);
+
+    writeAsPty(terminal, '\u001B[?1049h\u001B[HALTERNATE');
+    terminal.resize(160, 40);
+
+    const alternate = rowTexts(readAllRows(terminal), 160);
+
+    writeAsPty(terminal, '\u001B[?1049l');
+
+    const wide = rowTexts(readAllRows(terminal), 160);
+
+    expect(narrow.slice(0, 400)).toEqual(
+      lines.flatMap((line) => [line.slice(0, 58), line.slice(58)]),
+    );
+
+    expect(alternate[0]).toBe('ALTERNATE');
+    expect(alternate).toHaveLength(40);
+    expect(wide.slice(0, 200)).toEqual(lines);
+  });
+
+  it('keeps the width and the history when a program asks for 132 columns', () => {
+    using terminal = openTerminal();
+    const lines = Array.from({ length: 100 }, (_, line) => `deccolm ${line}`);
+
+    writeAsPty(terminal, lines.map((line) => `${line}\r\n`).join(''));
+
+    const before = terminal.stableRows();
+
+    writeAsPty(terminal, '\u001B[?40h\u001B[?3hafter-deccolm\r\n\u001B[?3hsecond-deccolm\r\n');
+
+    const rows = readAllRows(terminal);
+
+    expect(terminal.stableRows().epoch).toBe(before.epoch);
+    expect(rows.cells.length).toBe(rows.rowCount * (1 + 80 * cellWords));
+    expect(rowTexts(rows).slice(0, 77)).toEqual(lines.slice(0, 77));
+  });
+
+  it('keeps the history rows when one write asks for 132 columns and then 80', () => {
+    using terminal = openTerminal();
+
+    const lines = Array.from(
+      { length: 60 },
+      (_, line) => `wrap${String(line).padStart(3, '0')} ${'z'.repeat(122)}`,
+    );
+
+    writeAsPty(terminal, lines.map((line) => `${line}\r\n`).join(''));
+
+    const { epoch, first, activeTop } = terminal.stableRows();
+    const history = terminal.readRows(epoch, first, activeTop - first);
+
+    writeAsPty(terminal, '\u001B[?40h\u001B[?3h\u001B[?3lround-trip\r\n');
+
+    expect(terminal.readRows(epoch, first, activeTop - first)).toEqual(history);
+    expect(history.ok && rowTexts(history.rows)[0]).toBe(lines[0]?.slice(0, 80));
+  });
+
+  it.each([
+    [
+      'split after mode 40',
+      (bytes: Uint8Array, splitAt: number) => [bytes.subarray(0, splitAt), bytes.subarray(splitAt)],
+    ],
+    [
+      'byte by byte',
+      (bytes: Uint8Array) => Array.from(bytes, (_, index) => bytes.subarray(index, index + 1)),
+    ],
+  ])('reads the same rows from bytes with DECCOLM written %s as from one write', (_name, split) => {
+    const history = Array.from(
+      { length: 12 },
+      (_, line) => `hist ${line} ${'x'.repeat(line)}\r\n`,
+    ).join('');
+
+    const bytes = encoder.encode(`${history}KEEP-ME\r\n\u001B[?40h\u001B[?3hAFTER`);
+    const splitAt = encoder.encode(`${history}KEEP-ME\r\n\u001B[?40h`).length;
+
+    const readAfter = (chunks: Uint8Array[]) => {
+      using terminal = openTerminal(20, 5);
+
+      terminal.stableRows();
+
+      for (const chunk of chunks) {
+        terminal.write(chunk);
+        terminal.stableRows();
+      }
+
+      return { stable: terminal.stableRows(), rows: readAllRows(terminal) };
+    };
+
+    const whole = readAfter([bytes]);
+
+    expect(readAfter(split(bytes, splitAt))).toEqual(whole);
+
+    expect(rowTexts(whole.rows, 20).slice(0, 10)).toEqual([
+      ...Array.from({ length: 9 }, (_, line) => `hist ${line} ${'x'.repeat(line)}`.trimEnd()),
+      'AFTER',
+    ]);
+  });
 });

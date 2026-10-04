@@ -51,6 +51,21 @@ export interface Frame {
   modes: number;
 }
 
+// Rows read by their stable numbers, in the layout of Frame.cells and Frame.graphemes, except
+// that each row's first word is its offset from the first row read.
+export interface RowRange {
+  rowCount: number;
+  cells: Uint32Array;
+  graphemes: Uint32Array;
+}
+
+// pruned: the first row asked for is gone from the history, or is in the primary screen's history
+// while the alternate screen is active.
+export type ReadRowsResult =
+  | { ok: true; rows: RowRange }
+  | { ok: false; reason: 'staleEpoch' }
+  | { ok: false; reason: 'pruned' };
+
 // An 80x24 screen of ASCII text fits in one pass.
 const firstTextBufferBytes = 4096;
 
@@ -99,6 +114,15 @@ const frameDoesNotFit = -1;
 
 const frameUpdateFailed = -2;
 
+// pane_read_rows returns these instead of a row count. It shares frameDoesNotFit.
+const readRowsStaleEpoch = -2;
+
+const readRowsPruned = -3;
+
+const readRowsFailed = -4;
+
+const maxRowCount = 0xff_ff_ff_ff;
+
 const firstFrameColumns = 80;
 
 const firstFrameRows = 24;
@@ -136,6 +160,28 @@ const assertScrollbackBytes = (scrollbackBytes: number) => {
   );
 };
 
+const assertRowNumber = (value: number, name: string) => {
+  invariant(
+    Number.isSafeInteger(value) && value >= 0,
+    `The ${name} must be a whole number, got ${value}.`,
+  );
+};
+
+const grown = (buffer: Uint32Array<ArrayBuffer>, wordsNeeded: number) =>
+  wordsNeeded > buffer.length ? new Uint32Array(wordsNeeded) : buffer;
+
+// info starts with the cell words a read needed.
+const grownCells = (cells: Uint32Array<ArrayBuffer>, info: BigUint64Array) => {
+  const wordsNeeded = Number(info[0]);
+
+  invariant(
+    wordsNeeded <= maxFrameWords,
+    `A read of ${wordsNeeded} cell words cannot index its cells with 32-bit words.`,
+  );
+
+  return grown(cells, wordsNeeded);
+};
+
 const loadLibrary = () =>
   dlopen(libraryPath, {
     pane_new: { args: [FFIType.u16, FFIType.u16, FFIType.u64], returns: FFIType.ptr },
@@ -148,6 +194,20 @@ const loadLibrary = () =>
     pane_frame: {
       args: [FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64, FFIType.ptr],
       returns: FFIType.i32,
+    },
+    pane_read_rows: {
+      args: [
+        FFIType.ptr,
+        FFIType.u64,
+        FFIType.u64,
+        FFIType.u32,
+        FFIType.ptr,
+        FFIType.u64,
+        FFIType.ptr,
+        FFIType.u64,
+        FFIType.ptr,
+      ],
+      returns: FFIType.i64,
     },
     pane_mark_all_dirty: { args: [FFIType.ptr], returns: FFIType.void },
     pane_stable_rows: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.bool },
@@ -172,6 +232,14 @@ export class Terminal {
 
   // Cell words used, grapheme words used, cursor x, cursor y, cursor visible, and mode bits.
   private readonly frameInfo = new BigUint64Array(frameInfoWords);
+
+  // Rows read by number use their own arrays, so a read does not overwrite the last frame.
+  private rangeCells = new Uint32Array(firstCellWords);
+
+  private rangeGraphemes = new Uint32Array(firstGraphemeWords);
+
+  // Cell words and grapheme words the last range read needed.
+  private readonly rangeInfo = new BigUint64Array(2);
 
   private readonly stableRowsInfo = new BigUint64Array(stableRowsWords);
 
@@ -293,6 +361,52 @@ export class Terminal {
     };
   }
 
+  // Reads up to count rows from the row numbered first in epoch, as stableRows numbers them. It
+  // stops at the last row. Unlike frame, it leaves dirty rows dirty, and it returns new arrays.
+  readRows(epoch: number, first: number, count: number): ReadRowsResult {
+    assertRowNumber(epoch, 'epoch');
+    assertRowNumber(first, 'first row number');
+
+    invariant(
+      Number.isInteger(count) && count >= 0 && count <= maxRowCount,
+      `A row count must be an integer in 0..${maxRowCount}, got ${count}.`,
+    );
+
+    const handle = this.live();
+
+    for (;;) {
+      const rowCount = Number(
+        this.symbols.pane_read_rows(
+          handle,
+          BigInt(epoch),
+          BigInt(first),
+          count,
+          this.rangeCells,
+          this.rangeCells.length,
+          this.rangeGraphemes,
+          this.rangeGraphemes.length,
+          this.rangeInfo,
+        ),
+      );
+
+      invariant(rowCount !== readRowsFailed, 'libghostty-vt could not read the rows.');
+
+      if (rowCount === readRowsStaleEpoch) {
+        return { ok: false, reason: 'staleEpoch' };
+      }
+
+      if (rowCount === readRowsPruned) {
+        return { ok: false, reason: 'pruned' };
+      }
+
+      if (rowCount !== frameDoesNotFit) {
+        return { ok: true, rows: this.copyRange(rowCount) };
+      }
+
+      this.growRangeBuffers();
+    }
+  }
+
   scrollback(): Scrollback {
     this.symbols.pane_scrollback(this.live(), this.scrollbackInfo);
 
@@ -302,21 +416,23 @@ export class Terminal {
   }
 
   private growFrameBuffers(): void {
-    const cellWordsNeeded = Number(this.frameInfo[0]);
-    const graphemeWordsNeeded = Number(this.frameInfo[1]);
+    this.cells = grownCells(this.cells, this.frameInfo);
+    this.graphemes = grown(this.graphemes, Number(this.frameInfo[1]));
+  }
 
-    invariant(
-      cellWordsNeeded <= maxFrameWords,
-      `A frame of ${cellWordsNeeded} cell words cannot index its cells with 32-bit words.`,
-    );
+  private growRangeBuffers(): void {
+    this.rangeCells = grownCells(this.rangeCells, this.rangeInfo);
+    this.rangeGraphemes = grown(this.rangeGraphemes, Number(this.rangeInfo[1]));
+  }
 
-    if (cellWordsNeeded > this.cells.length) {
-      this.cells = new Uint32Array(cellWordsNeeded);
-    }
+  private copyRange(rowCount: number): RowRange {
+    const [cellWordsUsed = 0n, graphemeWordsUsed = 0n] = this.rangeInfo;
 
-    if (graphemeWordsNeeded > this.graphemes.length) {
-      this.graphemes = new Uint32Array(graphemeWordsNeeded);
-    }
+    return {
+      rowCount,
+      cells: this.rangeCells.slice(0, Number(cellWordsUsed)),
+      graphemes: this.rangeGraphemes.slice(0, Number(graphemeWordsUsed)),
+    };
   }
 
   private readFrame(rowCount: number): Frame {
