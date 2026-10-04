@@ -639,7 +639,8 @@ it('reports no history on the alternate screen and the primary history after lea
   expect(terminal.scrollback().rows).toBe(primary);
 });
 
-// libghostty-vt rounds the limit down to whole pages, so the pages never use more than the limit.
+// With a limit of many pages, libghostty-vt keeps whole pages within it, so the pages never use
+// more than the limit.
 it('keeps the memory of retained history within the limit after writing ten times the limit', () => {
   const limitBytes = 4_000_000;
   using terminal = openTerminal(80, 24, limitBytes);
