@@ -369,7 +369,7 @@ static bool track_active_top(Pane *pane) {
 // area's top row, the epoch, and 1 when the alternate screen is active. The alternate screen has
 // no history, so both numbers stay at the primary screen's active top. Returns false when
 // libghostty-vt cannot track the active top.
-bool pane_stable_rows(Pane *pane, uint64_t *info) {
+static bool update_stable_rows(Pane *pane, uint64_t *info) {
   GhosttyTerminalScreen screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY;
   ghostty_terminal_get(pane->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen);
   if (screen != GHOSTTY_TERMINAL_SCREEN_PRIMARY) {
@@ -399,6 +399,89 @@ bool pane_stable_rows(Pane *pane, uint64_t *info) {
   info[2] = pane->epoch;
   info[3] = 0;
   return true;
+}
+
+bool pane_stable_rows(Pane *pane, uint64_t *info) { return update_stable_rows(pane, info); }
+
+// Returns the cluster length and writes the cluster to graphemes when it fits.
+static uint32_t read_ref_grapheme(const GhosttyGridRef *ref, FrameOutput *out) {
+  uint64_t start = out->graphemes_used + 2;
+  bool room = start < out->graphemes_len;
+  uint32_t *buffer = room ? out->graphemes + start : NULL;
+  size_t buffer_len = room ? out->graphemes_len - start : 0;
+  size_t length = 0;
+  ghostty_grid_ref_graphemes(ref, buffer, buffer_len, &length);
+  if (length <= 1) return (uint32_t)length;
+  if (start + length <= out->graphemes_len) {
+    out->graphemes[out->graphemes_used] = (uint32_t)out->cells_used;
+    out->graphemes[out->graphemes_used + 1] = (uint32_t)length;
+  }
+  out->graphemes_used = start + length;
+  return (uint32_t)length;
+}
+
+static void read_ref_cell(const GhosttyGridRef *ref, FrameOutput *out) {
+  GhosttyCell raw = 0;
+  ghostty_grid_ref_cell(ref, &raw);
+  uint32_t base = 0;
+  ghostty_cell_get(raw, GHOSTTY_CELL_DATA_CODEPOINT, &base);
+  bool styled = false;
+  ghostty_cell_get(raw, GHOSTTY_CELL_DATA_HAS_STYLING, &styled);
+  GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
+  if (styled) ghostty_grid_ref_style(ref, &style);
+  uint32_t fg = 0;
+  uint32_t bg = 0;
+  uint32_t flags = style_flags(raw, styled ? &style : NULL, &fg, &bg);
+  GhosttyCellContentTag tag = GHOSTTY_CELL_CONTENT_CODEPOINT;
+  ghostty_cell_get(raw, GHOSTTY_CELL_DATA_CONTENT_TAG, &tag);
+  if (tag == GHOSTTY_CELL_CONTENT_CODEPOINT_GRAPHEME && read_ref_grapheme(ref, out) > 1) flags |= 1u << 16;
+  put_cell_word(out, base);
+  put_cell_word(out, fg);
+  put_cell_word(out, bg);
+  put_cell_word(out, flags);
+}
+
+// Resolving a screen point walks the page list, so the row is resolved once. A grid ref names a
+// page node and a cell in it, and the row's other cells share the node and the y.
+static bool read_screen_row(Pane *pane, uint64_t y, uint32_t offset, uint16_t cols, FrameOutput *out) {
+  GhosttyPoint point = {.tag = GHOSTTY_POINT_TAG_SCREEN, .value = {.coordinate = {.x = 0, .y = (uint32_t)y}}};
+  GhosttyGridRef ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+  if (ghostty_terminal_grid_ref(pane->terminal, point, &ref) != GHOSTTY_SUCCESS) return false;
+  put_cell_word(out, offset);
+  for (uint16_t x = 0; x < cols; x++) {
+    ref.x = x;
+    read_ref_cell(&ref, out);
+  }
+  return true;
+}
+
+// Reads up to count rows of the active screen from the row numbered first, as pane_stable_rows
+// numbers them, in the pane_frame layout except that each row's first word is its offset from
+// first. It stops at the last row. The rows stay as dirty as they were.
+// info receives the cell words and grapheme words the rows need. Returns the number of rows, -1
+// when a buffer is too small, -2 when epoch is not the current epoch, -3 when the row numbered
+// first is gone, or -4 when libghostty-vt cannot track the active top or resolve a row.
+int64_t pane_read_rows(Pane *pane, uint64_t epoch, uint64_t first, uint32_t count, uint32_t *cells,
+                       uint64_t cells_len, uint32_t *graphemes, uint64_t graphemes_len, uint64_t *info) {
+  uint64_t stable[4] = {0, 0, 0, 0};
+  if (!update_stable_rows(pane, stable)) return -4;
+  if (stable[2] != epoch) return -2;
+  if (first < stable[0]) return -3;
+  size_t total = 0;
+  uint16_t cols = 0;
+  ghostty_terminal_get(pane->terminal, GHOSTTY_TERMINAL_DATA_TOTAL_ROWS, &total);
+  ghostty_terminal_get(pane->terminal, GHOSTTY_TERMINAL_DATA_COLS, &cols);
+  uint64_t y = first - stable[0];
+  uint64_t available = y < total ? total - y : 0;
+  uint32_t rows = available < count ? (uint32_t)available : count;
+  FrameOutput out = {.cells = cells, .cells_len = cells_len, .graphemes = graphemes, .graphemes_len = graphemes_len};
+  for (uint32_t row = 0; row < rows; row++) {
+    if (!read_screen_row(pane, y + row, row, cols, &out)) return -4;
+  }
+  info[0] = out.cells_used;
+  info[1] = out.graphemes_used;
+  if (out.cells_used > cells_len || out.graphemes_used > graphemes_len) return -1;
+  return rows;
 }
 
 // buildVt.sh defines PHI_GHOSTTY_COMMIT from its pin, so the library reports the Ghostty it links.
