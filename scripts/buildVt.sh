@@ -57,6 +57,7 @@ done
 
 (cd "$ghostty_dir" && "$zig_dir/zig" build -Demit-lib-vt=true -Doptimize=ReleaseFast)
 mkdir -p build
-"$zig_dir/zig" cc -O2 -shared -fPIC -I"$ghostty_dir/include" src/vt/shim.c \
+"$zig_dir/zig" cc -O2 -shared -fPIC -I"$ghostty_dir/include" \
+  -DPHI_GHOSTTY_COMMIT="\"$ghostty_commit\"" src/vt/shim.c \
   "$ghostty_dir/zig-out/lib/libghostty-vt.a" -o build/libphi-vt.so
 echo "built build/libphi-vt.so"
