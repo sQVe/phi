@@ -14,11 +14,84 @@ export type GhosttyCommitResult =
   | { ok: true; commit: string }
   | { ok: false; reason: 'library-missing'; detail: string };
 
+export interface Frame {
+  // The number of rows in cells.
+  rowCount: number;
+  // Each changed row as one word with its viewport row, then cellWords words per column: the
+  // base code point, the foreground color, the background color, and the CellFlag and CellWidth
+  // bits. A color is 0 for the default color, 1-256 for a palette index plus 1, and 0x1000000
+  // plus the 0xRRGGBB value for an RGB color.
+  cells: Uint32Array;
+  // Each cluster longer than one code point as one word with the index in cells of its cell's
+  // code point, one word with its length, then its code points, base first.
+  graphemes: Uint32Array;
+  cursor: { x: number; y: number; visible: boolean };
+  // The ModeFlag bits that are on.
+  modes: number;
+}
+
 // An 80x24 screen of ASCII text fits in one pass.
 const firstTextBufferBytes = 4096;
 
 // pane_resize returns this when libghostty-vt refuses the size.
 const resizeRefused = -2;
+
+// Words per cell in Frame.cells.
+export const cellWords = 4;
+
+// Bits of a cell's flags word.
+export enum CellFlag {
+  bold = 0x1,
+  faint = 0x2,
+  italic = 0x4,
+  underline = 0x8,
+  inverse = 0x10,
+  // The cell's whole cluster is in Frame.graphemes.
+  grapheme = 0x1_00_00,
+}
+
+// A cell's width is its flags word masked with cellWidthMask. A wide character's cell is followed
+// by a spacer tail cell. A spacer head ends a row whose wide character wrapped to the next row.
+export enum CellWidth {
+  narrow = 0,
+  wide = 0x1_00,
+  spacerTail = 0x2_00,
+  spacerHead = 0x3_00,
+}
+
+export const cellWidthMask = 0x3_00;
+
+// Bits of Frame.modes.
+export enum ModeFlag {
+  applicationCursorKeys = 0x1,
+  bracketedPaste = 0x2,
+  x10Mouse = 0x4,
+  normalMouse = 0x8,
+  buttonMouse = 0x10,
+  anyMouse = 0x20,
+  sgrMouse = 0x40,
+  alternateScreen = 0x80,
+}
+
+// pane_frame returns these instead of a row count.
+const frameDoesNotFit = -1;
+
+const frameUpdateFailed = -2;
+
+const firstFrameColumns = 80;
+
+const firstFrameRows = 24;
+
+// A whole screen of the first frame size without clusters fits the first buffers.
+const firstCellWords = firstFrameRows * (1 + firstFrameColumns * cellWords);
+
+const firstGraphemeWords = 1024;
+
+const frameInfoWords = 6;
+
+// Frame.graphemes holds each cell index in one 32-bit word, so a frame has at most this many cell
+// words.
+const maxFrameWords = 0xff_ff_ff_ff;
 
 const maxDimension = 65_535;
 
@@ -40,6 +113,11 @@ const loadLibrary = () =>
     pane_clear_reply: { args: [FFIType.ptr], returns: FFIType.void },
     pane_resize: { args: [FFIType.ptr, FFIType.u16, FFIType.u16], returns: FFIType.i64 },
     pane_text: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64], returns: FFIType.i64 },
+    pane_frame: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    pane_mark_all_dirty: { args: [FFIType.ptr], returns: FFIType.void },
     shim_ghostty_commit: { args: [], returns: FFIType.cstring },
   }).symbols;
 
@@ -53,6 +131,13 @@ let library: Symbols | undefined;
 // that the caller sends back to the program.
 export class Terminal {
   private handle: Handle | undefined;
+
+  private cells = new Uint32Array(firstCellWords);
+
+  private graphemes = new Uint32Array(firstGraphemeWords);
+
+  // Cell words used, grapheme words used, cursor x, cursor y, cursor visible, and mode bits.
+  private readonly frameInfo = new BigUint64Array(frameInfoWords);
 
   constructor(
     private readonly symbols: Symbols,
@@ -121,6 +206,72 @@ export class Terminal {
 
       buffer = new Uint8Array(length);
     }
+  }
+
+  // Returns the rows that changed since the last frame. The next frame reuses the arrays.
+  frame(): Frame {
+    const handle = this.live();
+
+    for (;;) {
+      const rowCount = this.symbols.pane_frame(
+        handle,
+        this.cells,
+        this.cells.length,
+        this.graphemes,
+        this.graphemes.length,
+        this.frameInfo,
+      );
+
+      invariant(rowCount !== frameUpdateFailed, 'libghostty-vt could not update the render state.');
+
+      if (rowCount !== frameDoesNotFit) {
+        return this.readFrame(rowCount);
+      }
+
+      this.growFrameBuffers();
+    }
+  }
+
+  // The next frame returns every row.
+  markAllDirty(): void {
+    this.symbols.pane_mark_all_dirty(this.live());
+  }
+
+  private growFrameBuffers(): void {
+    const cellWordsNeeded = Number(this.frameInfo[0]);
+    const graphemeWordsNeeded = Number(this.frameInfo[1]);
+
+    invariant(
+      cellWordsNeeded <= maxFrameWords,
+      `A frame of ${cellWordsNeeded} cell words cannot index its cells with 32-bit words.`,
+    );
+
+    if (cellWordsNeeded > this.cells.length) {
+      this.cells = new Uint32Array(cellWordsNeeded);
+    }
+
+    if (graphemeWordsNeeded > this.graphemes.length) {
+      this.graphemes = new Uint32Array(graphemeWordsNeeded);
+    }
+  }
+
+  private readFrame(rowCount: number): Frame {
+    const [
+      cellWordsUsed = 0n,
+      graphemeWordsUsed = 0n,
+      cursorX = 0n,
+      cursorY = 0n,
+      cursorVisible,
+      modes = 0n,
+    ] = this.frameInfo;
+
+    return {
+      rowCount,
+      cells: this.cells.subarray(0, Number(cellWordsUsed)),
+      graphemes: this.graphemes.subarray(0, Number(graphemeWordsUsed)),
+      cursor: { x: Number(cursorX), y: Number(cursorY), visible: cursorVisible === 1n },
+      modes: Number(modes),
+    };
   }
 
   [Symbol.dispose](): void {
