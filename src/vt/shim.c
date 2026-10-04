@@ -16,6 +16,8 @@ typedef struct {
   GhosttyTrackedGridRef anchor;
   uint64_t anchor_number;
   uint64_t active_top;
+  uint64_t restart_first;
+  bool reset;
   uint64_t epoch;
 } Pane;
 
@@ -38,6 +40,12 @@ static void write_pty(GhosttyTerminal terminal, void *userdata, const uint8_t *d
   }
   memcpy(pane->reply + pane->reply_len, data, len);
   pane->reply_len = needed;
+}
+
+static void full_reset(GhosttyTerminal terminal, void *userdata) {
+  (void)terminal;
+  Pane *pane = userdata;
+  pane->reset = true;
 }
 
 // Answer DA like xterm: VT220 with ANSI color.
@@ -85,11 +93,19 @@ Pane *pane_new(uint16_t cols, uint16_t rows, uint64_t scrollback_bytes) {
   ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_USERDATA, pane);
   ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY, (const void *)write_pty);
   ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES, (const void *)device_attributes);
+  ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_RESET, (const void *)full_reset);
   // OSC 10 and 11 queries only get a reply when default colors are set.
   GhosttyColorRgb foreground = {255, 255, 255};
   GhosttyColorRgb background = {0, 0, 0};
   ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, &foreground);
   ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &background);
+  // Join emoji ZWJ sequences into one cell like the Ghostty app. A program can still turn the mode
+  // off, and a full reset turns it back on.
+  GhosttyTerminalModeConfig grapheme_cluster = {.mode = GHOSTTY_MODE_GRAPHEME_CLUSTER, .value = true};
+  if (ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_MODE_DEFAULT, &grapheme_cluster) != GHOSTTY_SUCCESS) {
+    pane_free(pane);
+    return NULL;
+  }
   return pane;
 }
 
@@ -358,6 +374,18 @@ static bool track_active_top(Pane *pane) {
   return ghostty_terminal_grid_ref_track(pane->terminal, top, &pane->anchor) == GHOSTTY_SUCCESS;
 }
 
+// Starts a new epoch whose numbers begin above every number used before. Freeing the anchor keeps
+// later calls on the alternate screen from growing the epoch again.
+static void restart_numbers(Pane *pane) {
+  pane->epoch++;
+  uint16_t rows = 0;
+  ghostty_terminal_get(pane->terminal, GHOSTTY_TERMINAL_DATA_ROWS, &rows);
+  pane->restart_first = pane->active_top + rows;
+  ghostty_tracked_grid_ref_free(pane->anchor);
+  pane->anchor = NULL;
+  pane->reset = false;
+}
+
 // Gives each row of the primary screen a number that stays with the row while output scrolls it
 // into history and the oldest history is pruned, like WezTerm's StableRowIndex. libghostty-vt has
 // no such number, so a tracked grid ref marks the active area's top row with its number; the next
@@ -365,38 +393,37 @@ static bool track_active_top(Pane *pane) {
 // active top. When the marked row is gone (reset, or more output than the history holds between
 // two calls), when reflow put more rows above it than its number, or after a resize, the epoch
 // grows and numbers restart above every number used before.
+// One write can scroll the primary screen and then enter the alternate screen. The anchor still
+// resolves against the primary screen, but it can only be moved to the active screen, so it stays
+// in place until the primary screen is active again. Without an anchor, only the reset callback
+// shows that a reset cleared the primary screen.
 // info receives the number of screen row 0 (the oldest history row), the number of the active
 // area's top row, the epoch, and 1 when the alternate screen is active. The alternate screen has
 // no history, so both numbers stay at the primary screen's active top. Returns false when
 // libghostty-vt cannot track the active top.
 static bool update_stable_rows(Pane *pane, uint64_t *info) {
+  size_t scrollback = 0;
+  ghostty_terminal_get(pane->terminal, GHOSTTY_TERMINAL_DATA_PRIMARY_SCROLLBACK_ROWS, &scrollback);
+  uint64_t anchor_y = 0;
+  if (pane->reset) restart_numbers(pane);
+  if (anchor_row(pane, &anchor_y)) {
+    pane->active_top = pane->anchor_number - anchor_y + scrollback;
+  } else {
+    if (pane->anchor) restart_numbers(pane);
+    pane->active_top = pane->restart_first + scrollback;
+  }
+  info[1] = pane->active_top;
+  info[2] = pane->epoch;
   GhosttyTerminalScreen screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY;
   ghostty_terminal_get(pane->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen);
   if (screen != GHOSTTY_TERMINAL_SCREEN_PRIMARY) {
     info[0] = pane->active_top;
-    info[1] = pane->active_top;
-    info[2] = pane->epoch;
     info[3] = 1;
     return true;
-  }
-  size_t scrollback = 0;
-  ghostty_terminal_get(pane->terminal, GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS, &scrollback);
-  uint64_t anchor_y = 0;
-  if (anchor_row(pane, &anchor_y)) {
-    pane->active_top = pane->anchor_number - anchor_y + scrollback;
-  } else if (pane->anchor) {
-    pane->epoch++;
-    uint16_t rows = 0;
-    ghostty_terminal_get(pane->terminal, GHOSTTY_TERMINAL_DATA_ROWS, &rows);
-    pane->active_top += rows + scrollback;
-  } else {
-    pane->active_top = scrollback;
   }
   if (!track_active_top(pane)) return false;
   pane->anchor_number = pane->active_top;
   info[0] = pane->active_top - scrollback;
-  info[1] = pane->active_top;
-  info[2] = pane->epoch;
   info[3] = 0;
   return true;
 }
