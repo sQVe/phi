@@ -1,14 +1,16 @@
 Make DECCOLM never resize the terminal.
 
 Phi needs this because only the layout sets a pane's size. A program in a
-pane must not change it. With this patch DECCOLM still erases the display
-and homes the cursor, as tmux does, but keeps the size even with DEC mode 40.
+pane must not change it. With this patch DECCOLM keeps the size even with
+DEC mode 40. Like xterm, it still resets the margins, erases the display,
+and homes the cursor. The removed resize path was what reset the margins,
+so the patch resets them the same way resize does.
 
 Upstream: https://github.com/ghostty-org/ghostty/blob/83edd491e3024ae5e50393d62877b8897da1cccd/src/terminal/Terminal.zig#L3970
 
 --- a/src/terminal/Terminal.zig
 +++ b/src/terminal/Terminal.zig
-@@ -3968,25 +3968,12 @@
+@@ -3968,25 +3968,20 @@
  /// with the window. This will fix the grid at either 80 or 132 columns.
  /// The rows will continue to be variable.
  pub fn deccolm(self: *Terminal, alloc: Allocator, mode: DeccolmMode) !void {
@@ -19,7 +21,13 @@ Upstream: https://github.com/ghostty-org/ghostty/blob/83edd491e3024ae5e50393d628
 -        self.modes.set(.@"132_column", false);
 -        return;
 -    }
--
++    // phi: the pane size belongs to the layout, so DECCOLM
++    // never resizes, even with DEC mode 40. Like xterm, it still resets
++    // the margins, erases the display, and homes the cursor.
++    _ = alloc;
++    _ = mode;
++    self.modes.set(.@"132_column", false);
+ 
 -    // Enable it
 -    self.modes.set(.@"132_column", mode == .@"132_cols");
 -
@@ -31,12 +39,13 @@ Upstream: https://github.com/ghostty-org/ghostty/blob/83edd491e3024ae5e50393d628
 -        },
 -        .rows = self.rows,
 -    });
-+    // phi: the pane size belongs to the layout, so DECCOLM
-+    // never resizes, even with DEC mode 40. Like tmux, it still erases the
-+    // display and homes the cursor.
-+    _ = alloc;
-+    _ = mode;
-+    self.modes.set(.@"132_column", false);
++    // Reset the margins as resize does.
++    self.scrolling_region = .{
++        .top = 0,
++        .bottom = self.rows - 1,
++        .left = 0,
++        .right = self.cols - 1,
++    };
  
      // Erase our display and move our cursor.
      self.eraseDisplay(.complete, false);
