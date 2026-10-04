@@ -53,7 +53,6 @@ export class Terminal {
     return this.handle;
   }
 
-  // Parses program output and returns every reply the terminal sent while parsing it, if any.
   write(bytes: Uint8Array): Uint8Array | undefined {
     const handle = this.live();
     const length = Number(this.symbols.pane_write(handle, bytes, bytes.length));

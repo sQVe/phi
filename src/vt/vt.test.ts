@@ -16,7 +16,6 @@ const openTerminal = (cols = 80, rows = 24) => {
   return created.terminal;
 };
 
-// Writes each chunk in turn and joins every reply the terminal sent.
 const writeChunks = (terminal: Terminal, chunks: string[]) =>
   chunks
     .map((chunk) => terminal.write(encoder.encode(chunk)))
