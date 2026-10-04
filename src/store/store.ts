@@ -58,7 +58,7 @@ type Change =
   | { type: 'clientDetached'; clientId: ClientId; reason: DetachReason }
   | { type: 'serverStopping' };
 
-type RejectReason = 'paneExists' | 'unknownClient';
+type RejectReason = 'paneExists' | 'serverStopping' | 'unknownClient';
 
 // Whatever an effect still holds for this pane generation, such as its process and PTY.
 interface PaneProcess {
@@ -151,6 +151,10 @@ const fitPane = (state: State): { pane: Pane | undefined; changes: Change[] } =>
 };
 
 const startPane = (state: State): Applied | Rejected => {
+  if (state.stopping) {
+    return reject(state, 'serverStopping');
+  }
+
   if (state.pane !== undefined) {
     return reject(state, 'paneExists');
   }

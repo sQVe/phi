@@ -52,6 +52,14 @@ it('refuses a second pane and leaves state unchanged', () => {
   expect(result).toEqual({ kind: 'rejected', state, reason: 'paneExists' });
 });
 
+it('refuses to start a pane while the server stops and leaves state unchanged', () => {
+  const state = run([{ type: 'stopServer' }]);
+  const result = applyIntent(state, { type: 'startPane' });
+
+  expect(result).toEqual({ kind: 'rejected', state, reason: 'serverStopping' });
+  expect(result.state.revision).toBe(state.revision);
+});
+
 it('resizes the pane to the layout size of a client that attaches', () => {
   const state = run([{ type: 'startPane' }]);
   const result = intent(state, { type: 'attachClient', size: { columns: 100, rows: 30 } });
