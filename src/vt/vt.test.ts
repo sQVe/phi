@@ -313,19 +313,30 @@ it('returns a wide character as a wide cell followed by a spacer cell', () => {
   expect(widthOf(spacer)).toBe('spacerTail');
 });
 
-// Mode 2027 makes the terminal join an emoji ZWJ sequence into one cell.
 it.each([
   ['a combining cluster', 'e\u0301'],
   ['an emoji ZWJ sequence', '\u{1F469}\u200D\u{1F4BB}'],
-])('returns %s whole in one cell', (_name, cluster) => {
+])('returns %s whole in one cell on a new terminal', (_name, cluster) => {
   using terminal = openTerminal();
 
-  writeChunks(terminal, [`\u001B[?2027h${cluster}x`]);
+  writeChunks(terminal, [`${cluster}x`]);
 
   const cells = decodeRows(terminal.frame(), 80).get(0) ?? [];
 
   expect(cells[0]?.text).toBe(cluster);
   expect((cells[0]?.flags ?? 0) & CellFlag.grapheme).toBe(CellFlag.grapheme);
+  expect(rowText(cells)).toBe(`${cluster}x`);
+});
+
+it('splits an emoji ZWJ sequence into cells after a program turns off grapheme clustering', () => {
+  using terminal = openTerminal();
+  const cluster = '\u{1F469}\u200D\u{1F4BB}';
+
+  writeChunks(terminal, [`\u001B[?2027l${cluster}x`]);
+
+  const cells = decodeRows(terminal.frame(), 80).get(0) ?? [];
+
+  expect(cells[0]?.text).not.toBe(cluster);
   expect(rowText(cells)).toBe(`${cluster}x`);
 });
 
@@ -489,6 +500,52 @@ it('changes the epoch and numbers rows above every earlier number after a burst 
   expect(after.first).toBeGreaterThan(before.activeTop + 23);
 });
 
+it('changes the epoch once when one write bursts past the history and enters the alternate screen', () => {
+  using terminal = openTerminal(80, 24, 1);
+
+  terminal.write(encoder.encode(numberedLines(0, 100)));
+
+  const before = terminal.stableRows();
+
+  terminal.write(encoder.encode(`${numberedLines(100, 20_000)}\u001B[?1049h`));
+
+  const alternate = terminal.stableRows();
+  const again = terminal.stableRows();
+
+  terminal.write(encoder.encode('\u001B[?1049l'));
+
+  const primary = terminal.stableRows();
+
+  expect(alternate.epoch).not.toBe(before.epoch);
+  expect(alternate.activeTop).toBeGreaterThan(before.activeTop + 23);
+  expect(again).toEqual(alternate);
+  expect(primary).toEqual({ ...alternate, first: primary.first, alternate: false });
+});
+
+it.each([
+  ['a reset', (terminal: Terminal) => terminal.write(encoder.encode('\u001BcNEW'))],
+  ['a resize', (terminal: Terminal) => terminal.resize(70, 20)],
+])('changes the epoch on %s after the anchor is lost on the alternate screen', (_name, change) => {
+  using terminal = openTerminal(80, 24, 1);
+
+  terminal.write(encoder.encode(numberedLines(0, 100)));
+  terminal.stableRows();
+  terminal.write(encoder.encode(`${numberedLines(100, 20_000)}\u001B[?1049hOLD`));
+
+  const alternate = terminal.stableRows();
+
+  change(terminal);
+
+  const after = terminal.stableRows();
+
+  expect(after.epoch).not.toBe(alternate.epoch);
+
+  expect(terminal.readRows(alternate.epoch, alternate.activeTop, 1)).toEqual({
+    ok: false,
+    reason: 'staleEpoch',
+  });
+});
+
 it('changes the epoch on a resize', () => {
   using terminal = openTerminal();
 
@@ -633,9 +690,7 @@ it('reads a row from history with the cells the frame returned while it was on s
   const cluster = '\u{1F469}\u200D\u{1F4BB}';
 
   terminal.write(
-    encoder.encode(
-      `\u001B[?2027h\u001B[1;38;5;196;48;2;10;20;30mred\u001B[0m 漢 ${cluster}e\u0301\r\n`,
-    ),
+    encoder.encode(`\u001B[1;38;5;196;48;2;10;20;30mred\u001B[0m 漢 ${cluster}e\u0301\r\n`),
   );
 
   const { epoch, activeTop } = terminal.stableRows();
@@ -706,6 +761,34 @@ it('reads the alternate screen by the primary active top and the history again a
   expect(onAlternate).toEqual({ ok: false, reason: 'pruned' });
   expect(alternateTop.ok && rowTexts(alternateTop.rows)).toEqual(['alternate']);
   expect(afterLeaving.ok && rowTexts(afterLeaving.rows)).toEqual(['line 0']);
+});
+
+it('numbers rows the same when one write scrolls the primary screen and enters the alternate screen as when two writes do', () => {
+  const output = Array.from({ length: 19 }, (_, line) => `line ${line}\r\n`).join('');
+  const enter = '\u001B[?1049h\u001B[HALT';
+
+  const readAfter = (chunks: string[]) => {
+    using terminal = openTerminal(20, 5);
+
+    terminal.write(encoder.encode('CACHED-ROW\r\n'));
+
+    const cached = terminal.stableRows();
+
+    for (const chunk of chunks) {
+      terminal.write(encoder.encode(chunk));
+      terminal.stableRows();
+    }
+
+    return {
+      stable: terminal.stableRows(),
+      read: terminal.readRows(cached.epoch, cached.activeTop, 1),
+    };
+  };
+
+  const whole = readAfter([output + enter]);
+
+  expect(whole).toEqual(readAfter([output, enter]));
+  expect(whole.read).toEqual({ ok: false, reason: 'pruned' });
 });
 
 it('returns no rows past the last screen row', () => {

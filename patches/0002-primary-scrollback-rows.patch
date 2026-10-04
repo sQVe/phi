@@ -1,0 +1,59 @@
+Add GHOSTTY_TERMINAL_DATA_PRIMARY_SCROLLBACK_ROWS.
+
+Phi numbers primary screen rows with a tracked grid ref on the active
+area's top row. One write can scroll the primary screen and then enter
+the alternate screen. The ref still resolves against the primary screen,
+but scrolling moves rows in below it, so its screen y does not show how
+far the screen scrolled. GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS reads only
+the active screen. This key reads the primary screen's scrollback rows on
+either screen, so the numbers do not depend on where the PTY output is
+split into writes.
+
+Upstream: https://github.com/ghostty-org/ghostty/blob/83edd491e3024ae5e50393d62877b8897da1cccd/src/terminal/c/terminal.zig#L1839
+
+--- a/include/ghostty/vt/terminal.h
++++ b/include/ghostty/vt/terminal.h
+@@ -2575,6 +2575,14 @@ typedef enum GHOSTTY_ENUM_TYPED {
+    * Output type: GhosttyTerminalMemoryUsage *
+    */
+   GHOSTTY_TERMINAL_DATA_MEMORY_USAGE = 42,
++
++  /**
++   * The number of scrollback rows of the primary screen, even while the
++   * alternate screen is active.
++   *
++   * Output type: size_t *
++   */
++  GHOSTTY_TERMINAL_DATA_PRIMARY_SCROLLBACK_ROWS = 43,
+   GHOSTTY_TERMINAL_DATA_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
+ } GhosttyTerminalData;
+ 
+--- a/src/terminal/c/terminal.zig
++++ b/src/terminal/c/terminal.zig
+@@ -1709,6 +1709,7 @@ pub const TerminalData = enum(c_int) {
+     clipboard_write_max_bytes = 40,
+     mouse_shape = 41,
+     memory_usage = 42,
++    primary_scrollback_rows = 43,
+ 
+     /// Output type expected for querying the data of the given kind.
+     pub fn OutType(comptime self: TerminalData) type {
+@@ -1731,6 +1732,7 @@ pub const TerminalData = enum(c_int) {
+             .title, .pwd => lib.String,
+             .total_rows,
+             .scrollback_rows,
++            .primary_scrollback_rows,
+             .scrollback_max_bytes,
+             .scrollback_max_lines,
+             .continuation_max_bytes,
+@@ -1837,6 +1839,10 @@ fn getTyped(
+         },
+         .total_rows => out.* = t.screens.active.pages.total_rows,
+         .scrollback_rows => out.* = t.screens.active.pages.total_rows - t.rows,
++        .primary_scrollback_rows => {
++            const primary = t.screens.get(.primary) orelse return .no_value;
++            out.* = primary.pages.total_rows - t.rows;
++        },
+         .width_px => out.* = t.width_px,
+         .height_px => out.* = t.height_px,
+         .color_foreground => out.* = (t.colors.foreground.get() orelse return .no_value).cval(),
