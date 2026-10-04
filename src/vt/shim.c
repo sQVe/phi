@@ -109,3 +109,6 @@ int64_t pane_text(Pane *pane, uint8_t *buffer, size_t len) {
   if (result != GHOSTTY_SUCCESS && result != GHOSTTY_OUT_OF_SPACE) return -1;
   return (int64_t)written;
 }
+
+// buildVt.sh defines PHI_GHOSTTY_COMMIT from its pin, so the library reports the Ghostty it links.
+const char *shim_ghostty_commit(void) { return PHI_GHOSTTY_COMMIT; }

@@ -1,6 +1,8 @@
 import { dlopen, FFIType, toArrayBuffer } from 'bun:ffi';
-import { fileURLToPath } from 'node:url';
 
+// A compiled binary embeds the library and dlopen reads the embedded path. From source this is the
+// path of the built file.
+import libraryPath from '../../build/libphi-vt.so' with { type: 'file' };
 import { invariant } from '../invariant.ts';
 
 export type CreateTerminalResult =
@@ -8,10 +10,12 @@ export type CreateTerminalResult =
   | { ok: false; reason: 'library-missing'; detail: string }
   | { ok: false; reason: 'terminal-refused' };
 
+export type GhosttyCommitResult =
+  | { ok: true; commit: string }
+  | { ok: false; reason: 'library-missing'; detail: string };
+
 // An 80x24 screen of ASCII text fits in one pass.
 const firstTextBufferBytes = 4096;
-
-const libraryPath = fileURLToPath(new URL('../../build/libphi-vt.so', import.meta.url));
 
 const loadLibrary = () =>
   dlopen(libraryPath, {
@@ -22,6 +26,7 @@ const loadLibrary = () =>
     pane_clear_reply: { args: [FFIType.ptr], returns: FFIType.void },
     pane_resize: { args: [FFIType.ptr, FFIType.u16, FFIType.u16], returns: FFIType.void },
     pane_text: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64], returns: FFIType.i64 },
+    shim_ghostty_commit: { args: [], returns: FFIType.cstring },
   }).symbols;
 
 type Symbols = ReturnType<typeof loadLibrary>;
@@ -125,4 +130,18 @@ export const createTerminal = (cols: number, rows: number): CreateTerminalResult
   }
 
   return { ok: true, terminal: new Terminal(symbols, handle) };
+};
+
+export const ghosttyCommit = (): GhosttyCommitResult => {
+  const symbols = openLibrary();
+
+  if (typeof symbols === 'string') {
+    return { ok: false, reason: 'library-missing', detail: symbols };
+  }
+
+  const commit = symbols.shim_ghostty_commit();
+
+  invariant(commit !== null, 'The shim returned no Ghostty commit.');
+
+  return { ok: true, commit };
 };
