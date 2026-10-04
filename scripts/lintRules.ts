@@ -34,6 +34,13 @@ const allowedImports = new Map<string, Set<string>>([
 ]);
 
 const typeOnlyImports = new Map([['protocol', new Set(['store'])]]);
+
+// Files outside src/ that a module may import, relative to the package root. The binary embeds them.
+const outsideImports = new Map([
+  ['vt', new Set([join('build', 'libphi-vt.so')])],
+  ['index', new Set(['package.json'])],
+]);
+
 const runtimeModules = new Set(['ids', 'invariant', 'rows', 'layout', 'store']);
 
 const rendererFreeModules = new Set([
@@ -337,7 +344,9 @@ const lintRules: Plugin = {
           const targetPath = relative(sourceDirectory, localPath);
 
           if (escapesDirectory(targetPath)) {
-            return 'escape';
+            const packagePath = relative(dirname(sourceDirectory), localPath);
+
+            return outsideImports.get(importer)?.has(packagePath) === true ? undefined : 'escape';
           }
 
           const target = locate(targetPath);

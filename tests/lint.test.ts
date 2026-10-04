@@ -203,6 +203,7 @@ it.each(['lint', 'style:check'])(
         [
           "import { createCliRenderer } from '@opentui/core';",
           "import { useState } from 'react';",
+          "import packageJson from '../package.json' with { type: 'json' };",
           "import { client } from './client/client.ts';",
           "import { ids } from './ids.ts';",
           "import { invariant } from './invariant.ts';",
@@ -213,7 +214,7 @@ it.each(['lint', 'style:check'])(
           "import { store } from './store/store.ts';",
           "import { ui } from './ui/ui.tsx';",
           "import { vt } from './vt/vt.ts';",
-          'export const index = [createCliRenderer, useState, client, ids, invariant, layout];',
+          'export const index = [createCliRenderer, useState, packageJson, client, ids, invariant, layout];',
           'export const modules = [protocol, rows, server, store, ui, vt];',
         ],
         0,
@@ -377,6 +378,16 @@ it.each(['lint', 'style:check'])(
           'export const escaped = [outside, vt];',
         ],
         1,
+      ],
+      [
+        'src/vt/library.ts',
+        [
+          "import library from '../../build/libphi-vt.so' with { type: 'file' };",
+          "import packageJson from '../../package.json' with { type: 'json' };",
+          "import other from '../../build/other.so' with { type: 'file' };",
+          'export const files = [library, packageJson, other];',
+        ],
+        2,
       ],
       [
         'src/store/runtime.ts',
