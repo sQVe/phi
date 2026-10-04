@@ -5,6 +5,9 @@
 
 typedef struct {
   GhosttyTerminal terminal;
+  GhosttyRenderState state;
+  GhosttyRenderStateRowIterator rows;
+  GhosttyRenderStateRowCells cells;
   uint8_t *reply;
   size_t reply_len;
   size_t reply_capacity;
@@ -46,15 +49,27 @@ static bool device_attributes(GhosttyTerminal terminal, void *userdata, GhosttyD
   return true;
 }
 
+void pane_free(Pane *pane) {
+  ghostty_render_state_row_cells_free(pane->cells);
+  ghostty_render_state_row_iterator_free(pane->rows);
+  ghostty_render_state_free(pane->state);
+  ghostty_terminal_free(pane->terminal);
+  free(pane->reply);
+  free(pane);
+}
+
 Pane *pane_new(uint16_t cols, uint16_t rows) {
-  GhosttyTerminal terminal = NULL;
-  if (ghostty_terminal_new(NULL, &terminal, cols, rows) != GHOSTTY_SUCCESS) return NULL;
   Pane *pane = calloc(1, sizeof(Pane));
-  if (!pane) {
-    ghostty_terminal_free(terminal);
+  if (!pane) return NULL;
+  bool created = ghostty_terminal_new(NULL, &pane->terminal, cols, rows) == GHOSTTY_SUCCESS &&
+                 ghostty_render_state_new(NULL, &pane->state) == GHOSTTY_SUCCESS &&
+                 ghostty_render_state_row_iterator_new(NULL, &pane->rows) == GHOSTTY_SUCCESS &&
+                 ghostty_render_state_row_cells_new(NULL, &pane->cells) == GHOSTTY_SUCCESS;
+  if (!created) {
+    pane_free(pane);
     return NULL;
   }
-  pane->terminal = terminal;
+  GhosttyTerminal terminal = pane->terminal;
   // Without a write_pty callback the terminal drops its replies.
   ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_USERDATA, pane);
   ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY, (const void *)write_pty);
@@ -65,12 +80,6 @@ Pane *pane_new(uint16_t cols, uint16_t rows) {
   ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, &foreground);
   ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &background);
   return pane;
-}
-
-void pane_free(Pane *pane) {
-  ghostty_terminal_free(pane->terminal);
-  free(pane->reply);
-  free(pane);
 }
 
 // Returns how many reply bytes wait in pane_reply, or -1 when a reply did not fit in memory.
@@ -115,6 +124,190 @@ int64_t pane_text(Pane *pane, uint8_t *buffer, size_t len) {
   ghostty_formatter_free(formatter);
   if (result != GHOSTTY_SUCCESS && result != GHOSTTY_OUT_OF_SPACE) return -1;
   return (int64_t)written;
+}
+
+// Color keys: 0 is the default color, 1-256 a palette index plus 1, so the client's theme
+// applies, and 0x1000000 plus the value an RGB color.
+static uint32_t rgb_key(GhosttyColorRgb rgb) {
+  return 0x1000000u | ((uint32_t)rgb.r << 16) | ((uint32_t)rgb.g << 8) | rgb.b;
+}
+
+static uint32_t color_key(GhosttyStyleColor color) {
+  if (color.tag == GHOSTTY_STYLE_COLOR_PALETTE) return (uint32_t)color.value.palette + 1;
+  if (color.tag == GHOSTTY_STYLE_COLOR_RGB) return rgb_key(color.value.rgb);
+  return 0;
+}
+
+// Cells erased with a background set carry that color in the cell itself, without a style.
+static uint32_t content_background_key(GhosttyCell raw) {
+  GhosttyCellContentTag tag = GHOSTTY_CELL_CONTENT_CODEPOINT;
+  ghostty_cell_get(raw, GHOSTTY_CELL_DATA_CONTENT_TAG, &tag);
+  if (tag == GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE) {
+    GhosttyColorPaletteIndex index = 0;
+    ghostty_cell_get(raw, GHOSTTY_CELL_DATA_COLOR_PALETTE, &index);
+    return (uint32_t)index + 1;
+  }
+  if (tag == GHOSTTY_CELL_CONTENT_BG_COLOR_RGB) {
+    GhosttyColorRgb rgb = {0, 0, 0};
+    ghostty_cell_get(raw, GHOSTTY_CELL_DATA_COLOR_RGB, &rgb);
+    return rgb_key(rgb);
+  }
+  return 0;
+}
+
+// Fills the fg and bg keys and returns the cell's flags without the grapheme bit. style is NULL
+// for an unstyled cell.
+static uint32_t style_flags(GhosttyCell raw, const GhosttyStyle *style, uint32_t *fg, uint32_t *bg) {
+  uint32_t flags = 0;
+  *fg = 0;
+  *bg = content_background_key(raw);
+  if (style) {
+    *fg = color_key(style->fg_color);
+    if (*bg == 0) *bg = color_key(style->bg_color);
+    if (style->bold) flags |= 1;
+    if (style->faint) flags |= 2;
+    if (style->italic) flags |= 4;
+    if (style->underline) flags |= 8;
+    if (style->inverse) flags |= 16;
+  }
+  GhosttyCellWide wide = GHOSTTY_CELL_WIDE_NARROW;
+  ghostty_cell_get(raw, GHOSTTY_CELL_DATA_WIDE, &wide);
+  return flags | ((uint32_t)wide << 8);
+}
+
+static uint32_t cell_style(GhosttyRenderStateRowCells cells, GhosttyCell raw, uint32_t *fg, uint32_t *bg) {
+  bool styled = false;
+  ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_HAS_STYLING, &styled);
+  if (!styled) return style_flags(raw, NULL, fg, bg);
+  GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
+  ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &style);
+  return style_flags(raw, &style, fg, bg);
+}
+
+// The caller's buffers for one frame. A word past the end of a buffer is counted but not
+// written, so the counts tell the caller how large the buffers must be. The counts are 64-bit
+// because a 65535x65535 screen needs more than 2^32 words, and a wrapped count would pass the
+// bounds checks.
+typedef struct {
+  uint32_t *cells;
+  uint64_t cells_len;
+  uint64_t cells_used;
+  uint32_t *graphemes;
+  uint64_t graphemes_len;
+  uint64_t graphemes_used;
+} FrameOutput;
+
+static void put_cell_word(FrameOutput *out, uint32_t value) {
+  if (out->cells_used < out->cells_len) out->cells[out->cells_used] = value;
+  out->cells_used++;
+}
+
+static void put_grapheme(GhosttyRenderStateRowCells cells, FrameOutput *out, uint32_t length) {
+  uint64_t needed = 2 + (uint64_t)length;
+  if (out->graphemes_used + needed <= out->graphemes_len) {
+    uint32_t *grapheme = out->graphemes + out->graphemes_used;
+    // The binding never passes a cells buffer past 2^32 words, so a returned index fits.
+    grapheme[0] = (uint32_t)out->cells_used;
+    grapheme[1] = length;
+    ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF, grapheme + 2);
+  }
+  out->graphemes_used += needed;
+}
+
+static void read_cell(GhosttyRenderStateRowCells cells, FrameOutput *out) {
+  GhosttyCell raw = 0;
+  ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW, &raw);
+  uint32_t base = 0;
+  ghostty_cell_get(raw, GHOSTTY_CELL_DATA_CODEPOINT, &base);
+  uint32_t fg = 0;
+  uint32_t bg = 0;
+  uint32_t flags = cell_style(cells, raw, &fg, &bg);
+  uint32_t length = 0;
+  ghostty_render_state_row_cells_get(cells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN, &length);
+  if (length > 1) {
+    flags |= 1u << 16;
+    put_grapheme(cells, out, length);
+  }
+  put_cell_word(out, base);
+  put_cell_word(out, fg);
+  put_cell_word(out, bg);
+  put_cell_word(out, flags);
+}
+
+static void read_row(Pane *pane, uint16_t y, uint16_t cols, FrameOutput *out) {
+  put_cell_word(out, y);
+  ghostty_render_state_row_get(pane->rows, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &pane->cells);
+  for (uint16_t x = 0; x < cols; x++) {
+    if (ghostty_render_state_row_cells_next(pane->cells)) {
+      read_cell(pane->cells, out);
+      continue;
+    }
+    for (int word = 0; word < 4; word++) put_cell_word(out, 0);
+  }
+}
+
+static bool private_mode(Pane *pane, uint16_t value) {
+  GhosttyTerminalModeConfig config = {.mode = ghostty_mode_new(value, false), .value = false};
+  ghostty_terminal_get(pane->terminal, GHOSTTY_TERMINAL_DATA_MODE, &config);
+  return config.value;
+}
+
+// Bit i is DEC private mode private_modes[i]. Bit 7 is set while the alternate screen is active,
+// whichever of modes 47, 1047, and 1049 switched to it.
+static uint32_t mode_bits(Pane *pane) {
+  static const uint16_t private_modes[] = {1, 2004, 9, 1000, 1002, 1003, 1006};
+  uint32_t bits = 0;
+  for (size_t i = 0; i < sizeof private_modes / sizeof private_modes[0]; i++) {
+    if (private_mode(pane, private_modes[i])) bits |= 1u << i;
+  }
+  GhosttyTerminalScreen screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY;
+  ghostty_terminal_get(pane->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen);
+  if (screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE) bits |= 1u << 7;
+  return bits;
+}
+
+static void read_cursor(Pane *pane, uint64_t *x, uint64_t *y, uint64_t *visible) {
+  GhosttyRenderStateCursor cursor = GHOSTTY_INIT_SIZED(GhosttyRenderStateCursor);
+  ghostty_render_state_get(pane->state, GHOSTTY_RENDER_STATE_DATA_CURSOR, &cursor);
+  *x = cursor.viewport_x;
+  *y = cursor.viewport_y;
+  *visible = cursor.visible && cursor.viewport_has_value;
+}
+
+// Reads the rows that changed since the last frame. Each row goes to cells as its viewport y,
+// then 4 words per cell: code point, fg key, bg key, and flags, with keys as at color_key. Flags
+// bits 0-4 are bold, faint, italic, underline, and inverse, bits 8-9 the GhosttyCellWide value,
+// and bit 16 means the cell's cluster is in graphemes as: the index in cells of the cell's code
+// point, the cluster length, then its code points.
+// info receives the cell words and grapheme words the frame needs, the cursor x, y, and
+// visibility, and the bits of mode_bits. Returns the number of rows, -1 when a buffer is too
+// small, or -2 when libghostty-vt cannot update. Rows stay dirty unless the whole frame fits.
+int32_t pane_frame(Pane *pane, uint32_t *cells, uint64_t cells_len, uint32_t *graphemes, uint64_t graphemes_len,
+                   uint64_t *info) {
+  if (ghostty_render_state_update(pane->state, pane->terminal) != GHOSTTY_SUCCESS) return -2;
+  uint16_t cols = 0;
+  ghostty_render_state_get(pane->state, GHOSTTY_RENDER_STATE_DATA_COLS, &cols);
+  ghostty_render_state_get(pane->state, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &pane->rows);
+  FrameOutput out = {.cells = cells, .cells_len = cells_len, .graphemes = graphemes, .graphemes_len = graphemes_len};
+  int32_t rows = 0;
+  uint16_t y = 0;
+  while (ghostty_render_state_row_iterator_next_dirty(pane->rows, &y)) {
+    read_row(pane, y, cols, &out);
+    rows++;
+  }
+  info[0] = out.cells_used;
+  info[1] = out.graphemes_used;
+  read_cursor(pane, &info[2], &info[3], &info[4]);
+  info[5] = mode_bits(pane);
+  if (out.cells_used > cells_len || out.graphemes_used > graphemes_len) return -1;
+  ghostty_render_state_clean(pane->state);
+  return rows;
+}
+
+// The next pane_frame returns every row, such as for a client that just attached.
+void pane_mark_all_dirty(Pane *pane) {
+  GhosttyRenderStateDirty full = GHOSTTY_RENDER_STATE_DIRTY_FULL;
+  ghostty_render_state_set(pane->state, GHOSTTY_RENDER_STATE_OPTION_DIRTY, &full);
 }
 
 // buildVt.sh defines PHI_GHOSTTY_COMMIT from its pin, so the library reports the Ghostty it links.
