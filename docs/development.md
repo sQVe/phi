@@ -9,8 +9,14 @@ runtime, package manager, and test runner. Run these commands from the Phi check
 
 ```sh
 bun install --frozen-lockfile
+bun run build:vt
 bun run check
 ```
+
+`bun run build:vt` builds `build/libphi-vt.so` on Linux x86_64. It downloads Zig and the pinned
+Ghostty source to `${XDG_CACHE_HOME:-$HOME/.cache}/phi` and applies the patches in `patches/`. Run
+it again after you change `src/vt/shim.c`. After you change a patch, delete the cached Ghostty
+directory first.
 
 `bun install` also installs the Git hooks. The pre-commit hook runs the house-style and format
 checks on staged files.
