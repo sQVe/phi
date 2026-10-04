@@ -20,6 +20,17 @@ const firstTextBufferBytes = 4096;
 // pane_resize returns this when libghostty-vt refuses the size.
 const resizeRefused = -2;
 
+const maxDimension = 65_535;
+
+// The FFI passes sizes as u16 and would wrap anything outside that range to another size.
+const fitsDimension = (value: number) =>
+  Number.isInteger(value) && value >= 0 && value <= maxDimension;
+
+const assertDimensions = (cols: number, rows: number) => {
+  invariant(fitsDimension(cols), `Terminal columns must be an integer in 0..65535, got ${cols}.`);
+  invariant(fitsDimension(rows), `Terminal rows must be an integer in 0..65535, got ${rows}.`);
+};
+
 const loadLibrary = () =>
   dlopen(libraryPath, {
     pane_new: { args: [FFIType.u16, FFIType.u16], returns: FFIType.ptr },
@@ -82,6 +93,8 @@ export class Terminal {
   }
 
   resize(cols: number, rows: number): Uint8Array | undefined {
+    assertDimensions(cols, rows);
+
     const handle = this.live();
     const length = Number(this.symbols.pane_resize(handle, cols, rows));
 
@@ -131,6 +144,8 @@ const openLibrary = (): Symbols | string => {
 };
 
 export const createTerminal = (cols: number, rows: number): CreateTerminalResult => {
+  assertDimensions(cols, rows);
+
   const symbols = openLibrary();
 
   if (typeof symbols === 'string') {
