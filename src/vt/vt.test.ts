@@ -94,6 +94,14 @@ describe.each([
       expect(writeChunks(terminal, [cursorAtLastColumn])).toBe('\u001B[1;80R');
       expect(writeChunks(terminal, [cursorAtBottomRight])).toBe('\u001B[24;80R');
     });
+
+    it('resets the margins so origin mode homes to the first row', () => {
+      using terminal = openTerminal();
+
+      writeChunks(terminal, [`${mode40}\u001B[?69h\u001B[5;20r\u001B[10;40s\u001B[?6h${deccolm}X`]);
+
+      expect(terminal.text()).toBe('X');
+    });
   });
 });
 
@@ -103,6 +111,27 @@ it('resizes the terminal', () => {
   terminal.resize(100, 30);
 
   expect(writeChunks(terminal, [cursorAtBottomRight])).toBe('\u001B[30;100R');
+});
+
+it('returns the size report a resize sends with in-band resize reports on', () => {
+  using terminal = openTerminal();
+
+  writeChunks(terminal, ['\u001B[?2048h']);
+
+  expect(decoder.decode(terminal.resize(100, 30))).toBe('\u001B[48;30;100;30;100t');
+});
+
+it('returns no reply from a resize with in-band resize reports off', () => {
+  using terminal = openTerminal();
+
+  expect(terminal.resize(100, 30)).toBeUndefined();
+});
+
+it('refuses a resize to zero columns and keeps the size', () => {
+  using terminal = openTerminal();
+
+  expect(() => terminal.resize(0, 30)).toThrow();
+  expect(writeChunks(terminal, [cursorAtBottomRight])).toBe('\u001B[24;80R');
 });
 
 it('returns the whole screen as text when it is larger than the first buffer', () => {
