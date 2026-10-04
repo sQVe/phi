@@ -20,10 +20,12 @@ const probeColumns = 80;
 
 const probeRows = 24;
 
+const probeScrollbackBytes = 0;
+
 // Loads the terminal library and parses a query with it, so the versions printed are the ones that
 // work in this binary.
 const readVersions = (): VersionsResult => {
-  const created = createTerminal(probeColumns, probeRows);
+  const created = createTerminal(probeColumns, probeRows, probeScrollbackBytes);
 
   if (!created.ok) {
     const detail = created.reason === 'library-missing' ? `: ${created.detail}` : '';

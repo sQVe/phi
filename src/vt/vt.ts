@@ -14,6 +14,27 @@ export type GhosttyCommitResult =
   | { ok: true; commit: string }
   | { ok: false; reason: 'library-missing'; detail: string };
 
+// Numbers of primary-screen rows. A number stays with its row until the epoch changes.
+export interface StableRows {
+  // The number of the oldest history row.
+  first: number;
+  // The number of the active screen's top row.
+  activeTop: number;
+  epoch: number;
+  // The alternate screen has no history, so while it is active both numbers stay at the primary
+  // screen's active top.
+  alternate: boolean;
+}
+
+export interface Scrollback {
+  // History rows the active screen retains. The alternate screen has none, so this is 0 while it
+  // is active.
+  rows: number;
+  limitBytes: number;
+  // Memory the primary screen's pages use, history and active screen together.
+  usedBytes: number;
+}
+
 export interface Frame {
   // The number of rows in cells.
   rowCount: number;
@@ -93,6 +114,10 @@ const frameInfoWords = 6;
 // words.
 const maxFrameWords = 0xff_ff_ff_ff;
 
+const stableRowsWords = 4;
+
+const scrollbackWords = 3;
+
 const maxDimension = 65_535;
 
 // The FFI passes sizes as u16 and would wrap anything outside that range to another size.
@@ -104,9 +129,16 @@ const assertDimensions = (cols: number, rows: number) => {
   invariant(fitsDimension(rows), `Terminal rows must be an integer in 0..65535, got ${rows}.`);
 };
 
+const assertScrollbackBytes = (scrollbackBytes: number) => {
+  invariant(
+    Number.isSafeInteger(scrollbackBytes) && scrollbackBytes >= 0,
+    `The scrollback limit must be a whole number of bytes, got ${scrollbackBytes}.`,
+  );
+};
+
 const loadLibrary = () =>
   dlopen(libraryPath, {
-    pane_new: { args: [FFIType.u16, FFIType.u16], returns: FFIType.ptr },
+    pane_new: { args: [FFIType.u16, FFIType.u16, FFIType.u64], returns: FFIType.ptr },
     pane_free: { args: [FFIType.ptr], returns: FFIType.void },
     pane_write: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64], returns: FFIType.i64 },
     pane_reply: { args: [FFIType.ptr], returns: FFIType.ptr },
@@ -118,6 +150,8 @@ const loadLibrary = () =>
       returns: FFIType.i32,
     },
     pane_mark_all_dirty: { args: [FFIType.ptr], returns: FFIType.void },
+    pane_stable_rows: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.bool },
+    pane_scrollback: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.void },
     shim_ghostty_commit: { args: [], returns: FFIType.cstring },
   }).symbols;
 
@@ -138,6 +172,10 @@ export class Terminal {
 
   // Cell words used, grapheme words used, cursor x, cursor y, cursor visible, and mode bits.
   private readonly frameInfo = new BigUint64Array(frameInfoWords);
+
+  private readonly stableRowsInfo = new BigUint64Array(stableRowsWords);
+
+  private readonly scrollbackInfo = new BigUint64Array(scrollbackWords);
 
   constructor(
     private readonly symbols: Symbols,
@@ -191,7 +229,7 @@ export class Terminal {
     return this.takeReply(handle, length);
   }
 
-  // Returns the active screen as plain text, with trailing spaces trimmed.
+  // Returns the history and the active screen as plain text, with trailing spaces trimmed.
   text(): string {
     const handle = this.live();
 
@@ -235,6 +273,32 @@ export class Terminal {
   // The next frame returns every row.
   markAllDirty(): void {
     this.symbols.pane_mark_all_dirty(this.live());
+  }
+
+  // Numbers rows by following the active top from the last call, so the server must call this
+  // after every write, also while no client reads rows. Otherwise a burst larger than the history
+  // loses the row it follows, and the epoch changes.
+  stableRows(): StableRows {
+    const tracked = this.symbols.pane_stable_rows(this.live(), this.stableRowsInfo);
+
+    invariant(tracked, 'libghostty-vt could not track the active screen top.');
+
+    const [first = 0n, activeTop = 0n, epoch = 0n, alternate] = this.stableRowsInfo;
+
+    return {
+      first: Number(first),
+      activeTop: Number(activeTop),
+      epoch: Number(epoch),
+      alternate: alternate === 1n,
+    };
+  }
+
+  scrollback(): Scrollback {
+    this.symbols.pane_scrollback(this.live(), this.scrollbackInfo);
+
+    const [rows = 0n, limitBytes = 0n, usedBytes = 0n] = this.scrollbackInfo;
+
+    return { rows: Number(rows), limitBytes: Number(limitBytes), usedBytes: Number(usedBytes) };
   }
 
   private growFrameBuffers(): void {
@@ -294,8 +358,15 @@ const openLibrary = (): Symbols | string => {
   }
 };
 
-export const createTerminal = (cols: number, rows: number): CreateTerminalResult => {
+// scrollbackBytes caps the memory the history holds. libghostty-vt prunes whole pages, so the
+// history can hold more than the limit.
+export const createTerminal = (
+  cols: number,
+  rows: number,
+  scrollbackBytes: number,
+): CreateTerminalResult => {
   assertDimensions(cols, rows);
+  assertScrollbackBytes(scrollbackBytes);
 
   const symbols = openLibrary();
 
@@ -303,7 +374,7 @@ export const createTerminal = (cols: number, rows: number): CreateTerminalResult
     return { ok: false, reason: 'library-missing', detail: symbols };
   }
 
-  const handle = symbols.pane_new(cols, rows);
+  const handle = symbols.pane_new(cols, rows, scrollbackBytes);
 
   if (handle === null) {
     return { ok: false, reason: 'terminal-refused' };

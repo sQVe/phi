@@ -12,6 +12,11 @@ typedef struct {
   size_t reply_len;
   size_t reply_capacity;
   bool reply_lost;
+  // Stable row numbers, see pane_stable_rows.
+  GhosttyTrackedGridRef anchor;
+  uint64_t anchor_number;
+  uint64_t active_top;
+  uint64_t epoch;
 } Pane;
 
 // The terminal sends replies during a write and cannot be asked to pause, so the buffer grows
@@ -50,6 +55,7 @@ static bool device_attributes(GhosttyTerminal terminal, void *userdata, GhosttyD
 }
 
 void pane_free(Pane *pane) {
+  ghostty_tracked_grid_ref_free(pane->anchor);
   ghostty_render_state_row_cells_free(pane->cells);
   ghostty_render_state_row_iterator_free(pane->rows);
   ghostty_render_state_free(pane->state);
@@ -58,7 +64,7 @@ void pane_free(Pane *pane) {
   free(pane);
 }
 
-Pane *pane_new(uint16_t cols, uint16_t rows) {
+Pane *pane_new(uint16_t cols, uint16_t rows, uint64_t scrollback_bytes) {
   Pane *pane = calloc(1, sizeof(Pane));
   if (!pane) return NULL;
   bool created = ghostty_terminal_new(NULL, &pane->terminal, cols, rows) == GHOSTTY_SUCCESS &&
@@ -70,6 +76,11 @@ Pane *pane_new(uint16_t cols, uint16_t rows) {
     return NULL;
   }
   GhosttyTerminal terminal = pane->terminal;
+  size_t max_bytes = scrollback_bytes;
+  if (ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES, &max_bytes) != GHOSTTY_SUCCESS) {
+    pane_free(pane);
+    return NULL;
+  }
   // Without a write_pty callback the terminal drops its replies.
   ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_USERDATA, pane);
   ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY, (const void *)write_pty);
@@ -106,6 +117,8 @@ void pane_clear_reply(Pane *pane) {
 // libghostty-vt refuses the resize.
 int64_t pane_resize(Pane *pane, uint16_t cols, uint16_t rows) {
   if (ghostty_terminal_resize(pane->terminal, cols, rows, 1, 1) != GHOSTTY_SUCCESS) return -2;
+  // Reflow rewraps rows, so rows read before the resize no longer match their numbers.
+  pane->epoch++;
   return waiting_reply_len(pane);
 }
 
@@ -308,6 +321,84 @@ int32_t pane_frame(Pane *pane, uint32_t *cells, uint64_t cells_len, uint32_t *gr
 void pane_mark_all_dirty(Pane *pane) {
   GhosttyRenderStateDirty full = GHOSTTY_RENDER_STATE_DIRTY_FULL;
   ghostty_render_state_set(pane->state, GHOSTTY_RENDER_STATE_OPTION_DIRTY, &full);
+}
+
+// Fills info with the scrollback rows the active screen retains, the byte limit, and the bytes
+// of memory the primary screen's pages use.
+void pane_scrollback(Pane *pane, uint64_t *info) {
+  size_t rows = 0;
+  size_t max_bytes = 0;
+  GhosttyTerminalMemoryUsage memory = GHOSTTY_INIT_SIZED(GhosttyTerminalMemoryUsage);
+  ghostty_terminal_get(pane->terminal, GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS, &rows);
+  ghostty_terminal_get(pane->terminal, GHOSTTY_TERMINAL_DATA_SCROLLBACK_MAX_BYTES, &max_bytes);
+  ghostty_terminal_get(pane->terminal, GHOSTTY_TERMINAL_DATA_MEMORY_USAGE, &memory);
+  info[0] = rows;
+  info[1] = max_bytes;
+  info[2] = memory.primary_resident_bytes;
+}
+
+static GhosttyPoint active_top_point(void) {
+  return (GhosttyPoint){.tag = GHOSTTY_POINT_TAG_ACTIVE, .value = {.coordinate = {.x = 0, .y = 0}}};
+}
+
+// Returns whether the anchor still marks its row, and puts that row's screen y in anchor_y.
+// Reflow on a narrower resize can put more rows above the anchor than its number, so the rows
+// above it would get negative numbers. Such an anchor counts as lost.
+static bool anchor_row(Pane *pane, uint64_t *anchor_y) {
+  if (!pane->anchor) return false;
+  GhosttyPointCoordinate anchor = {0, 0};
+  if (ghostty_tracked_grid_ref_point(pane->anchor, GHOSTTY_POINT_TAG_SCREEN, &anchor) != GHOSTTY_SUCCESS) return false;
+  *anchor_y = anchor.y;
+  return anchor.y <= pane->anchor_number;
+}
+
+static bool track_active_top(Pane *pane) {
+  GhosttyPoint top = active_top_point();
+  if (pane->anchor) return ghostty_tracked_grid_ref_set(pane->anchor, pane->terminal, top) == GHOSTTY_SUCCESS;
+  return ghostty_terminal_grid_ref_track(pane->terminal, top, &pane->anchor) == GHOSTTY_SUCCESS;
+}
+
+// Gives each row of the primary screen a number that stays with the row while output scrolls it
+// into history and the oldest history is pruned, like WezTerm's StableRowIndex. libghostty-vt has
+// no such number, so a tracked grid ref marks the active area's top row with its number; the next
+// call reads where that row moved to in screen coordinates. Each call moves the ref back to the
+// active top. When the marked row is gone (reset, or more output than the history holds between
+// two calls), when reflow put more rows above it than its number, or after a resize, the epoch
+// grows and numbers restart above every number used before.
+// info receives the number of screen row 0 (the oldest history row), the number of the active
+// area's top row, the epoch, and 1 when the alternate screen is active. The alternate screen has
+// no history, so both numbers stay at the primary screen's active top. Returns false when
+// libghostty-vt cannot track the active top.
+bool pane_stable_rows(Pane *pane, uint64_t *info) {
+  GhosttyTerminalScreen screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY;
+  ghostty_terminal_get(pane->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen);
+  if (screen != GHOSTTY_TERMINAL_SCREEN_PRIMARY) {
+    info[0] = pane->active_top;
+    info[1] = pane->active_top;
+    info[2] = pane->epoch;
+    info[3] = 1;
+    return true;
+  }
+  size_t scrollback = 0;
+  ghostty_terminal_get(pane->terminal, GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS, &scrollback);
+  uint64_t anchor_y = 0;
+  if (anchor_row(pane, &anchor_y)) {
+    pane->active_top = pane->anchor_number - anchor_y + scrollback;
+  } else if (pane->anchor) {
+    pane->epoch++;
+    uint16_t rows = 0;
+    ghostty_terminal_get(pane->terminal, GHOSTTY_TERMINAL_DATA_ROWS, &rows);
+    pane->active_top += rows + scrollback;
+  } else {
+    pane->active_top = scrollback;
+  }
+  if (!track_active_top(pane)) return false;
+  pane->anchor_number = pane->active_top;
+  info[0] = pane->active_top - scrollback;
+  info[1] = pane->active_top;
+  info[2] = pane->epoch;
+  info[3] = 0;
+  return true;
 }
 
 // buildVt.sh defines PHI_GHOSTTY_COMMIT from its pin, so the library reports the Ghostty it links.

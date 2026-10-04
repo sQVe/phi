@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 
-import type { Frame, Terminal } from './vt.ts';
+import type { Frame, StableRows, Terminal } from './vt.ts';
 import { CellFlag, CellWidth, cellWidthMask, cellWords, createTerminal, ModeFlag } from './vt.ts';
 
 interface Cell {
@@ -13,8 +13,10 @@ interface Cell {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-const openTerminal = (cols = 80, rows = 24) => {
-  const created = createTerminal(cols, rows);
+const defaultScrollbackBytes = 10_000_000;
+
+const openTerminal = (cols = 80, rows = 24, scrollbackBytes = defaultScrollbackBytes) => {
+  const created = createTerminal(cols, rows, scrollbackBytes);
 
   if (!created.ok) {
     throw new Error(created.reason);
@@ -211,7 +213,7 @@ describe.each([
   });
 
   it('refuses to create a terminal', () => {
-    expect(() => createTerminal(cols, rows)).toThrow();
+    expect(() => createTerminal(cols, rows, defaultScrollbackBytes)).toThrow();
   });
 });
 
@@ -225,7 +227,7 @@ it('returns the whole screen as text when it is larger than the first buffer', (
 });
 
 it('refuses a terminal without columns', () => {
-  const created = createTerminal(0, 24);
+  const created = createTerminal(0, 24, defaultScrollbackBytes);
 
   expect(created).toEqual({ ok: false, reason: 'terminal-refused' });
 });
@@ -397,4 +399,180 @@ it('returns every row after markAllDirty', () => {
 
   expect([...rows.keys()]).toEqual(Array.from({ length: 24 }, (_, row) => row));
   expect(rowText(rows.get(0) ?? [])).toBe('hello');
+});
+
+it('keeps the epoch and moves the active top one row per scrolled line', () => {
+  using terminal = openTerminal();
+  const first = terminal.stableRows();
+
+  const reads = Array.from({ length: 30 }, (_, line) => {
+    terminal.write(encoder.encode(`line ${line}\r\n`));
+
+    return terminal.stableRows();
+  });
+
+  expect(reads.map((read) => read.epoch)).toEqual(reads.map(() => first.epoch));
+
+  expect(reads.map((read) => read.activeTop)).toEqual(
+    reads.map((_, line) => first.activeTop + Math.max(0, line - 22)),
+  );
+});
+
+const numberedLines = (from: number, count: number) =>
+  Array.from({ length: count }, (_, index) => `line ${from + index}\r\n`).join('');
+
+// Screen rows from the oldest history row, each labeled with the number its line had when written.
+const expectLinesNumbered = (terminal: Terminal, start: StableRows) => {
+  const { first } = terminal.stableRows();
+  const lines = terminal.text().split('\n');
+
+  expect(lines.length).toBeGreaterThan(1);
+  expect(lines).toEqual(lines.map((_, y) => `line ${first + y - start.first}`));
+};
+
+it('keeps the number of each row while rows scroll into history', () => {
+  using terminal = openTerminal();
+  const start = terminal.stableRows();
+
+  const numbers = Array.from({ length: 60 }, (_, line) => {
+    terminal.write(encoder.encode(numberedLines(line, 1)));
+
+    const { activeTop } = terminal.stableRows();
+    const { cursor } = terminal.frame();
+
+    return activeTop + cursor.y - 1;
+  });
+
+  const end = terminal.stableRows();
+
+  expect(numbers).toEqual(numbers.map((_, line) => start.first + line));
+  expect(end.first).toBe(start.first);
+  expect(end.epoch).toBe(start.epoch);
+  expectLinesNumbered(terminal, start);
+});
+
+it('keeps the numbers of surviving rows and the epoch when history is pruned', () => {
+  using terminal = openTerminal(80, 24, 1);
+  const start = terminal.stableRows();
+  const epochs = new Set<number>();
+
+  for (let line = 0; line < 20_000; line += 100) {
+    terminal.write(encoder.encode(numberedLines(line, 100)));
+    epochs.add(terminal.stableRows().epoch);
+  }
+
+  const end = terminal.stableRows();
+
+  expect([...epochs]).toEqual([start.epoch]);
+  expect(end.first).toBeGreaterThan(start.first);
+  expect(end.activeTop - end.first).toBe(terminal.scrollback().rows);
+  expectLinesNumbered(terminal, start);
+});
+
+it('changes the epoch and numbers rows above every earlier number after a burst larger than the history', () => {
+  using terminal = openTerminal(80, 24, 1);
+
+  terminal.write(encoder.encode(numberedLines(0, 100)));
+
+  const before = terminal.stableRows();
+
+  terminal.write(encoder.encode(numberedLines(100, 20_000)));
+
+  const after = terminal.stableRows();
+
+  expect(after.epoch).not.toBe(before.epoch);
+  expect(after.first).toBeGreaterThan(before.activeTop + 23);
+});
+
+it('changes the epoch on a resize', () => {
+  using terminal = openTerminal();
+
+  terminal.write(encoder.encode(numberedLines(0, 40)));
+
+  const before = terminal.stableRows();
+
+  terminal.resize(60, 20);
+
+  expect(terminal.stableRows().epoch).not.toBe(before.epoch);
+});
+
+it('changes the epoch on a reset', () => {
+  using terminal = openTerminal();
+
+  terminal.write(encoder.encode(numberedLines(0, 40)));
+
+  const before = terminal.stableRows();
+
+  terminal.write(encoder.encode('\u001Bc'));
+
+  expect(terminal.stableRows().epoch).not.toBe(before.epoch);
+});
+
+it('reports the alternate screen and returns the primary numbers after leaving it', () => {
+  using terminal = openTerminal();
+
+  terminal.write(encoder.encode(numberedLines(0, 40)));
+
+  const primary = terminal.stableRows();
+
+  terminal.write(encoder.encode(`\u001B[?1049h${numberedLines(0, 40)}`));
+
+  const alternate = terminal.stableRows();
+
+  terminal.write(encoder.encode('\u001B[?1049l'));
+
+  expect(alternate).toEqual({
+    first: primary.activeTop,
+    activeTop: primary.activeTop,
+    epoch: primary.epoch,
+    alternate: true,
+  });
+
+  expect(terminal.stableRows()).toEqual(primary);
+});
+
+it('reports no history on the alternate screen and the primary history after leaving it', () => {
+  using terminal = openTerminal();
+
+  terminal.write(encoder.encode(numberedLines(0, 40)));
+
+  const primary = terminal.scrollback().rows;
+
+  terminal.write(encoder.encode('\u001B[?1049h'));
+
+  const alternate = terminal.scrollback().rows;
+
+  terminal.write(encoder.encode('\u001B[?1049l'));
+
+  expect(primary).toBeGreaterThan(0);
+  expect(alternate).toBe(0);
+  expect(terminal.scrollback().rows).toBe(primary);
+});
+
+// libghostty-vt rounds the limit down to whole pages, so the pages never use more than the limit.
+it('keeps the memory of retained history within the limit after writing ten times the limit', () => {
+  const limitBytes = 4_000_000;
+  using terminal = openTerminal(80, 24, limitBytes);
+  const chunk = encoder.encode(`${'x'.repeat(78)}\r\n`.repeat(1000));
+  const used: number[] = [];
+
+  for (let written = 0; written < limitBytes * 10; written += chunk.length) {
+    terminal.write(chunk);
+    terminal.stableRows();
+    used.push(terminal.scrollback().usedBytes);
+  }
+
+  const { rows, limitBytes: reportedLimit } = terminal.scrollback();
+
+  expect(Math.max(...used)).toBeLessThanOrEqual(limitBytes);
+  expect(Math.max(...used)).toBeGreaterThan(limitBytes / 2);
+  expect(rows).toBeGreaterThan(0);
+  expect(reportedLimit).toBe(limitBytes);
+});
+
+it.each([
+  ['a negative', -1],
+  ['a fractional', 0.5],
+])('refuses %s scrollback limit', (_name, scrollbackBytes) => {
+  expect(() => createTerminal(80, 24, scrollbackBytes)).toThrow();
 });
