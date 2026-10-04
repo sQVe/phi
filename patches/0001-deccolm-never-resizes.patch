@@ -1,36 +1,24 @@
 Make DECCOLM never resize the terminal.
 
 Phi needs this because only the layout sets a pane's size. A program in a
-pane must not change it. With this patch DECCOLM keeps the size even with
-DEC mode 40. Like xterm, it still resets the margins, erases the display,
-and homes the cursor. The removed resize path was what reset the margins,
-so the patch resets them the same way resize does.
+pane must not change it. With DEC mode 40 off, DECCOLM still does nothing,
+as upstream. With mode 40 on, DECCOLM sets mode 3 and resets the margins,
+erases the display, and homes the cursor, but keeps the size. The removed
+resize path was what reset the margins, so the patch resets them the same
+way resize does.
+
+xterm behaves the same way when its disallowedWindowOps resource includes
+ColumnMode: with mode 40 on, srm_DECCOLM in charproc.c still sets the mode
+and clears the screen, but skips the resize.
 
 Upstream: https://github.com/ghostty-org/ghostty/blob/83edd491e3024ae5e50393d62877b8897da1cccd/src/terminal/Terminal.zig#L3970
 
 --- a/src/terminal/Terminal.zig
 +++ b/src/terminal/Terminal.zig
-@@ -3968,25 +3968,20 @@
- /// with the window. This will fix the grid at either 80 or 132 columns.
- /// The rows will continue to be variable.
- pub fn deccolm(self: *Terminal, alloc: Allocator, mode: DeccolmMode) !void {
--    // If DEC mode 40 isn't enabled, then this is ignored. We also make
--    // sure that we don't have deccolm set because we want to fully ignore
--    // set mode.
--    if (!self.modes.get(.enable_mode_3)) {
--        self.modes.set(.@"132_column", false);
--        return;
--    }
-+    // phi: the pane size belongs to the layout, so DECCOLM
-+    // never resizes, even with DEC mode 40. Like xterm, it still resets
-+    // the margins, erases the display, and homes the cursor.
-+    _ = alloc;
-+    _ = mode;
-+    self.modes.set(.@"132_column", false);
+@@ -3979,14 +3979,15 @@
+     // Enable it
+     self.modes.set(.@"132_column", mode == .@"132_cols");
  
--    // Enable it
--    self.modes.set(.@"132_column", mode == .@"132_cols");
--
 -    // Resize to the requested size
 -    try self.resize(alloc, .{
 -        .cols = switch (mode) {
@@ -39,7 +27,9 @@ Upstream: https://github.com/ghostty-org/ghostty/blob/83edd491e3024ae5e50393d628
 -        },
 -        .rows = self.rows,
 -    });
++    // phi: the pane size belongs to the layout, so DECCOLM never resizes.
 +    // Reset the margins as resize does.
++    _ = alloc;
 +    self.scrolling_region = .{
 +        .top = 0,
 +        .bottom = self.rows - 1,

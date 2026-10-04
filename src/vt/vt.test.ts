@@ -39,6 +39,13 @@ const splits = (input: string) =>
     input.slice(index + 1),
   ]);
 
+const writesOf = (input: string) =>
+  [
+    ['a whole write', [input]],
+    ['two writes', [input.slice(0, -2), input.slice(-2)]],
+    ['byte-by-byte writes', input.split('')],
+  ] as const;
+
 const readClusters = (graphemes: Uint32Array) => {
   const clusters = new Map<number, number[]>();
 
@@ -141,38 +148,59 @@ it('returns every reply when the replies exceed 64 KiB', () => {
 });
 
 describe.each([
-  ['on', '\u001B[?40h'],
-  ['off', '\u001B[?40l'],
-])('with mode 40 %s', (_name, mode40) => {
-  describe.each([
-    ['set', '\u001B[?3h'],
-    ['reset', '\u001B[?3l'],
-  ])('DECCOLM %s', (_mode, deccolm) => {
-    const input = `${mode40}\u001B[5;5Hhello${deccolm}`;
+  ['set', '\u001B[?3h'],
+  ['reset', '\u001B[?3l'],
+])('DECCOLM %s', (_mode, deccolm) => {
+  describe('with mode 40 off', () => {
+    const before = '\u001B[?40l\u001B[5;5Hhello';
 
-    it.each([
-      ['a whole write', [input]],
-      ['two writes', [input.slice(0, -2), input.slice(-2)]],
-      ['byte-by-byte writes', input.split('')],
-    ])('erases the screen, homes the cursor, and keeps 80x24 in %s', (_writes, chunks) => {
-      using terminal = openTerminal();
+    it.each(writesOf(`${before}${deccolm}`))(
+      'leaves the screen and the cursor untouched in %s',
+      (_writes, chunks) => {
+        using terminal = openTerminal();
+        using untouched = openTerminal();
 
-      writeChunks(terminal, chunks);
+        writeChunks(terminal, [...chunks]);
+        writeChunks(untouched, [before]);
 
-      expect(terminal.text()).toBe('');
-      expect(writeChunks(terminal, ['\u001B[6n'])).toBe('\u001B[1;1R');
-      expect(writeChunks(terminal, [cursorAtLastColumn])).toBe('\u001B[1;80R');
-      expect(writeChunks(terminal, [cursorAtBottomRight])).toBe('\u001B[24;80R');
-    });
+        expect(terminal.text()).toBe(untouched.text());
+        expect(writeChunks(terminal, ['\u001B[6n'])).toBe('\u001B[5;10R');
+      },
+    );
+  });
+
+  describe('with mode 40 on', () => {
+    it.each(writesOf(`\u001B[?40h\u001B[5;5Hhello${deccolm}`))(
+      'erases the screen, homes the cursor, and keeps 80x24 in %s',
+      (_writes, chunks) => {
+        using terminal = openTerminal();
+
+        writeChunks(terminal, [...chunks]);
+
+        expect(terminal.text()).toBe('');
+        expect(writeChunks(terminal, ['\u001B[6n'])).toBe('\u001B[1;1R');
+        expect(writeChunks(terminal, [cursorAtLastColumn])).toBe('\u001B[1;80R');
+        expect(writeChunks(terminal, [cursorAtBottomRight])).toBe('\u001B[24;80R');
+      },
+    );
 
     it('resets the margins so origin mode homes to the first row', () => {
       using terminal = openTerminal();
 
-      writeChunks(terminal, [`${mode40}\u001B[?69h\u001B[5;20r\u001B[10;40s\u001B[?6h${deccolm}X`]);
+      writeChunks(terminal, [
+        `\u001B[?40h\u001B[?69h\u001B[5;20r\u001B[10;40s\u001B[?6h${deccolm}X`,
+      ]);
 
       expect(terminal.text()).toBe('X');
     });
   });
+});
+
+it('reports the 132 column mode a program asked for with mode 40 on', () => {
+  using terminal = openTerminal();
+
+  expect(writeChunks(terminal, ['\u001B[?40h\u001B[?3h\u001B[?3$p'])).toBe('\u001B[?3;1$y');
+  expect(writeChunks(terminal, ['\u001B[?3l\u001B[?3$p'])).toBe('\u001B[?3;2$y');
 });
 
 it('resizes the terminal', () => {
