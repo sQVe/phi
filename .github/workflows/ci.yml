@@ -23,6 +23,11 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/phi
+          key: vt-${{ runner.os }}-${{ hashFiles('scripts/buildVt.sh', 'patches/**', 'src/vt/shim.c') }}
+      - run: bun run build:vt
       - run: bun run --bun format:check
       - run: bun run --bun style:check
       - run: bun run --bun typecheck
@@ -37,4 +42,9 @@ jobs:
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/phi
+          key: vt-${{ runner.os }}-${{ hashFiles('scripts/buildVt.sh', 'patches/**', 'src/vt/shim.c') }}
+      - run: bun run build:vt
       - run: bun run --bun test
