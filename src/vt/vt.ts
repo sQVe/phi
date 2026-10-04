@@ -17,6 +17,9 @@ export type GhosttyCommitResult =
 // An 80x24 screen of ASCII text fits in one pass.
 const firstTextBufferBytes = 4096;
 
+// pane_resize returns this when libghostty-vt refuses the size.
+const resizeRefused = -2;
+
 const loadLibrary = () =>
   dlopen(libraryPath, {
     pane_new: { args: [FFIType.u16, FFIType.u16], returns: FFIType.ptr },
@@ -24,7 +27,7 @@ const loadLibrary = () =>
     pane_write: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64], returns: FFIType.i64 },
     pane_reply: { args: [FFIType.ptr], returns: FFIType.ptr },
     pane_clear_reply: { args: [FFIType.ptr], returns: FFIType.void },
-    pane_resize: { args: [FFIType.ptr, FFIType.u16, FFIType.u16], returns: FFIType.void },
+    pane_resize: { args: [FFIType.ptr, FFIType.u16, FFIType.u16], returns: FFIType.i64 },
     pane_text: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64], returns: FFIType.i64 },
     shim_ghostty_commit: { args: [], returns: FFIType.cstring },
   }).symbols;
@@ -53,10 +56,7 @@ export class Terminal {
     return this.handle;
   }
 
-  write(bytes: Uint8Array): Uint8Array | undefined {
-    const handle = this.live();
-    const length = Number(this.symbols.pane_write(handle, bytes, bytes.length));
-
+  private takeReply(handle: Handle, length: number): Uint8Array | undefined {
     invariant(length >= 0, 'libghostty-vt could not hold a reply in memory.');
 
     if (length === 0) {
@@ -74,8 +74,23 @@ export class Terminal {
     return reply;
   }
 
-  resize(cols: number, rows: number): void {
-    this.symbols.pane_resize(this.live(), cols, rows);
+  write(bytes: Uint8Array): Uint8Array | undefined {
+    const handle = this.live();
+    const length = Number(this.symbols.pane_write(handle, bytes, bytes.length));
+
+    return this.takeReply(handle, length);
+  }
+
+  resize(cols: number, rows: number): Uint8Array | undefined {
+    const handle = this.live();
+    const length = Number(this.symbols.pane_resize(handle, cols, rows));
+
+    invariant(
+      length !== resizeRefused,
+      `libghostty-vt refused to resize the terminal to ${cols}x${rows}.`,
+    );
+
+    return this.takeReply(handle, length);
   }
 
   // Returns the active screen as plain text, with trailing spaces trimmed.
