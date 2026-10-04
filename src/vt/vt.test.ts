@@ -134,6 +134,24 @@ it('refuses a resize to zero columns and keeps the size', () => {
   expect(writeChunks(terminal, [cursorAtBottomRight])).toBe('\u001B[24;80R');
 });
 
+describe.each([
+  ['columns past the u16 range', 65_537, 30],
+  ['rows past the u16 range', 100, 65_537],
+  ['fractional columns', 80.5, 30],
+  ['negative rows', 100, -1],
+])('with %s', (_name, cols, rows) => {
+  it('refuses a resize and keeps the size', () => {
+    using terminal = openTerminal();
+
+    expect(() => terminal.resize(cols, rows)).toThrow();
+    expect(writeChunks(terminal, [cursorAtBottomRight])).toBe('\u001B[24;80R');
+  });
+
+  it('refuses to create a terminal', () => {
+    expect(() => createTerminal(cols, rows)).toThrow();
+  });
+});
+
 it('returns the whole screen as text when it is larger than the first buffer', () => {
   using terminal = openTerminal(200, 60);
   const row = 'x'.repeat(200);
