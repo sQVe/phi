@@ -11,7 +11,7 @@ xterm behaves the same way when its disallowedWindowOps resource includes
 ColumnMode: with mode 40 on, srm_DECCOLM in charproc.c still sets the mode
 and clears the screen, but skips the resize.
 
-Upstream: https://github.com/ghostty-org/ghostty/blob/83edd491e3024ae5e50393d62877b8897da1cccd/src/terminal/Terminal.zig#L3970
+Upstream: https://github.com/ghostty-org/ghostty/discussions/14540
 
 --- a/src/terminal/Terminal.zig
 +++ b/src/terminal/Terminal.zig
