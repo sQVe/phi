@@ -73,13 +73,17 @@ void pane_free(Pane *pane) {
   free(pane);
 }
 
-// Parses PTY output and returns how many reply bytes wait in pane_reply, or -1 when a reply did not
-// fit in memory. Program output never changes the terminal's size: a patch makes DECCOLM erase
-// without resizing.
-int64_t pane_write(Pane *pane, const uint8_t *data, size_t len) {
-  ghostty_terminal_vt_write(pane->terminal, data, len);
+// Returns how many reply bytes wait in pane_reply, or -1 when a reply did not fit in memory.
+static int64_t waiting_reply_len(Pane *pane) {
   if (pane->reply_lost) return -1;
   return (int64_t)pane->reply_len;
+}
+
+// Parses PTY output and returns waiting_reply_len. Program output never changes the terminal's
+// size: a patch makes DECCOLM erase without resizing.
+int64_t pane_write(Pane *pane, const uint8_t *data, size_t len) {
+  ghostty_terminal_vt_write(pane->terminal, data, len);
+  return waiting_reply_len(pane);
 }
 
 const uint8_t *pane_reply(Pane *pane) { return pane->reply; }
@@ -89,8 +93,11 @@ void pane_clear_reply(Pane *pane) {
   pane->reply_lost = false;
 }
 
-void pane_resize(Pane *pane, uint16_t cols, uint16_t rows) {
-  ghostty_terminal_resize(pane->terminal, cols, rows, 1, 1);
+// Returns waiting_reply_len, since a resize can send an in-band size report, or -2 when
+// libghostty-vt refuses the resize.
+int64_t pane_resize(Pane *pane, uint16_t cols, uint16_t rows) {
+  if (ghostty_terminal_resize(pane->terminal, cols, rows, 1, 1) != GHOSTTY_SUCCESS) return -2;
+  return waiting_reply_len(pane);
 }
 
 // Copies the active screen as plain text into buffer. Returns the text's length, or -1 when the
