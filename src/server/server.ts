@@ -23,9 +23,13 @@ interface ServerOptions {
   directory: string;
 }
 
+// A failed step does not stop the steps after it, and the lock is always released.
+type StopResult = { ok: true } | { ok: false; reason: 'cleanupFailed'; message: string };
+
 export interface Server {
-  // Resolves once the panes have ended, the connections are closed, and the socket is gone.
-  stopped: Promise<void>;
+  // Resolves once every shutdown step has run, and never rejects. On success the panes have ended,
+  // the connections are closed, and the socket is gone.
+  stopped: Promise<StopResult>;
   stop: () => void;
   // For tests: write to the pane's PTY and read the pane's text while the pane runs.
   writeToPane: (text: string) => void;
@@ -64,7 +68,7 @@ interface ServerContext {
   // The store's current state. Only report and dispatch replace it.
   state: State;
   runtime: Runtime;
-  stopped: PromiseWithResolvers<undefined>;
+  stopped: PromiseWithResolvers<StopResult>;
   releaseSignals: () => void;
   // Why the first pane failed to start, so runServer can report it.
   paneStartFailure: string | undefined;
@@ -72,6 +76,9 @@ interface ServerContext {
 
 // Effects report facts with this, and report starts effects, so effects take it as an argument.
 type Report = (context: ServerContext, fact: Fact) => void;
+
+// How long a pane whose stop failed gets to exit after it is killed.
+const paneExitWaitMs = 1000;
 
 // 1 MiB of frames a client has not read yet.
 const connectionQueueLimitBytes = 0x10_00_00;
@@ -124,52 +131,123 @@ const startPane = (context: ServerContext, pane: Pane, report: Report): void => 
   report(context, { type: 'paneStarted', paneId: id, generation });
 };
 
-// A failed stop still ends the pane at once, so the rest of the shutdown can go on.
-const stopPane = async (context: ServerContext, id: PaneId, pane: PaneRuntime): Promise<void> => {
+// Runs one shutdown step, and logs and records its failure instead of throwing.
+const runStep = (
+  context: ServerContext,
+  failures: string[],
+  step: string,
+  run: () => void,
+): void => {
+  try {
+    run();
+  } catch (error) {
+    const message = `${step}: ${describeError(error)}`;
+
+    context.options.log.error(`${step} failed.`, { error: describeError(error) });
+    failures.push(message);
+  }
+};
+
+const exitedWithin = async (pane: PaneRuntime, waitMs: number): Promise<boolean> => {
+  const timedOut = Bun.sleep(waitMs).then(() => false);
+  const exited = pane.exited.then(() => true);
+
+  return Promise.race([exited, timedOut]);
+};
+
+// A failed stop still kills the pane and waits a bounded time for its shell, so the rest of the
+// shutdown can go on. Returns what failed.
+const stopPane = async (
+  context: ServerContext,
+  id: PaneId,
+  pane: PaneRuntime,
+): Promise<string[]> => {
   const { log } = context.options;
+  const failures: string[] = [];
 
   try {
     await pane.stop();
+
+    return failures;
   } catch (error) {
     log.error('Stopping the pane failed.', { paneId: id, error: describeError(error) });
-
-    try {
-      pane[Symbol.dispose]();
-    } catch (disposeError) {
-      log.error('Ending the pane failed.', { paneId: id, error: describeError(disposeError) });
-    }
+    failures.push(`Stopping pane ${id}: ${describeError(error)}`);
   }
+
+  runStep(context, failures, `Ending pane ${id}`, () => {
+    pane[Symbol.dispose]();
+  });
+
+  if (!(await exitedWithin(pane, paneExitWaitMs))) {
+    log.error('The pane did not exit in time.', { paneId: id, waitMs: paneExitWaitMs });
+    failures.push(`Pane ${id} did not exit within ${paneExitWaitMs} ms`);
+  }
+
+  return failures;
 };
 
-const shutDown = async (context: ServerContext): Promise<void> => {
+const stopResultOf = (failures: readonly string[]): StopResult => {
+  if (failures.length === 0) {
+    return { ok: true };
+  }
+
+  return {
+    ok: false,
+    reason: 'cleanupFailed',
+    message: `The server stopped, but its cleanup failed. ${failures.join('. ')}.`,
+  };
+};
+
+// Every step runs even when an earlier one fails. The lock and the signal handlers go last.
+const shutDown = async (context: ServerContext): Promise<StopResult> => {
   const { runtime, options } = context;
   const panes = [...runtime.panes.entries()];
+  const paneFailures = await Promise.all(panes.map(([id, pane]) => stopPane(context, id, pane)));
+  const failures = paneFailures.flat();
 
-  options.log.info('Stopping the server.');
+  runtime.panes.clear();
 
-  try {
-    await Promise.all(panes.map(([id, pane]) => stopPane(context, id, pane)));
-    runtime.panes.clear();
-
-    for (const connection of runtime.connections.values()) {
+  for (const connection of runtime.connections.values()) {
+    runStep(context, failures, 'Closing a connection', () => {
       connection.close();
-    }
-
-    runtime.connections.clear();
-    runtime.listener?.stop(true);
-    rmSync(context.socketPath, { force: true });
-    context.releaseLock();
-    options.log.info('Stopped the server.');
-  } finally {
-    context.releaseSignals();
-    context.stopped.resolve(undefined);
+    });
   }
+
+  runtime.connections.clear();
+
+  runStep(context, failures, 'Stopping the listener', () => {
+    runtime.listener?.stop(true);
+  });
+
+  runStep(context, failures, `Removing the socket ${context.socketPath}`, () => {
+    rmSync(context.socketPath, { force: true });
+  });
+
+  runStep(context, failures, 'Releasing the socket lock', context.releaseLock);
+  runStep(context, failures, 'Releasing the signal handlers', context.releaseSignals);
+
+  const result = stopResultOf(failures);
+
+  if (result.ok) {
+    options.log.info('Stopped the server.');
+  }
+
+  return result;
 };
 
 const stopServer = (context: ServerContext): void => {
-  shutDown(context).catch((error: unknown) => {
-    context.options.log.error('Stopping the server failed.', { error: describeError(error) });
-  });
+  context.options.log.info('Stopping the server.');
+
+  shutDown(context)
+    .then((result) => {
+      context.stopped.resolve(result);
+    })
+    .catch((error: unknown) => {
+      const message = `Stopping the server failed: ${describeError(error)}`;
+
+      context.options.log.error('Stopping the server failed.', { error: describeError(error) });
+      context.stopped.resolve({ ok: false, reason: 'cleanupFailed', message });
+    });
 };
 
 const runEffects = (context: ServerContext, changes: readonly Change[], report: Report): void => {

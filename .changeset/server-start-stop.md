@@ -12,4 +12,6 @@ socket that refuses connections. The server locks a `.lock` file next to its soc
 server runs on a socket path. `phi server start` succeeds only when the server it started is ready,
 and it prints that server's error when the server cannot start its shell or write its log.
 `phi server stop` also stops a server from another Phi build, so a restart moves the server to the
-new build.
+new build. `phi server run` exits with code 1 and a message when the server cannot clean up as it
+stops, such as when it cannot remove its socket. `phi server stop` then exits with code 1 at once
+and names the socket the server left.

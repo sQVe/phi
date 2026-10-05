@@ -1,6 +1,16 @@
 import { expect, it, onTestFinished } from 'bun:test';
 import { existsSync } from 'node:fs';
-import { link, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  link,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -209,6 +219,114 @@ it.each([
     expect(run.stderr).toContain('missing-shell');
     expect(existsSync(socketPath)).toBe(false);
     expect(serverProcessesIn(directory)).toEqual([]);
+  },
+  cliTestTimeoutMs,
+);
+
+it.skipIf(process.getuid?.() === 0)(
+  'exits 1 with a message when run cannot remove its socket on stop',
+  async () => {
+    const directory = await temporaryDirectory();
+    const socketDirectory = join(directory, 'run');
+    const socketPath = join(socketDirectory, 'phi.sock');
+
+    const child = Bun.spawn(
+      ['bun', join(root, 'src/index.ts'), 'server', 'run', '--socket', socketPath, '--json'],
+      {
+        cwd: directory,
+        env: environmentFor(directory),
+        stdin: 'ignore',
+        stdout: 'pipe',
+        stderr: 'pipe',
+      },
+    );
+
+    const ready = await child.stdout.getReader().read();
+
+    await chmod(socketDirectory, 0o500);
+
+    let exitCode: number;
+    let stderr: string;
+
+    try {
+      child.kill('SIGTERM');
+      [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+    } finally {
+      await chmod(socketDirectory, 0o700);
+    }
+
+    expect(new TextDecoder().decode(ready.value)).toContain(socketPath);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain(socketPath);
+  },
+  cliTestTimeoutMs,
+);
+
+it.skipIf(process.getuid?.() === 0)(
+  'exits 1 at once with a message when stop finds the socket left behind',
+  async () => {
+    const directory = await temporaryDirectory();
+    const socketDirectory = join(directory, 'run');
+    const socketPath = join(socketDirectory, 'phi.sock');
+
+    await startServer(directory, socketPath);
+    await chmod(socketDirectory, 0o500);
+
+    let stopped: CliRun;
+
+    const started = performance.now();
+
+    try {
+      stopped = await runCli(['server', 'stop', '--socket', socketPath], directory);
+    } finally {
+      await chmod(socketDirectory, 0o700);
+    }
+
+    const elapsed = performance.now() - started;
+
+    // Well under the stop timeout of 10 seconds.
+    expect(elapsed).toBeLessThan(5000);
+    expect(stopped.exitCode).toBe(1);
+    expect(stopped.stdout).toBe('');
+    expect(stopped.stderr).toContain(`left its socket at ${socketPath}`);
+  },
+  cliTestTimeoutMs,
+);
+
+it(
+  'waits for a server that is still stopping, even when a free lock file is left',
+  async () => {
+    const directory = await temporaryDirectory();
+    const socketDirectory = join(directory, 'run');
+    const socketPath = join(socketDirectory, 'phi.sock');
+
+    await mkdir(socketDirectory, { mode: 0o700 });
+    // An earlier server left the lock file, and this server comes from a build without the lock.
+    await writeFile(`${socketPath}.lock`, '', { mode: 0o600 });
+
+    const listener = Bun.listen({
+      unix: socketPath,
+      socket: {
+        data: () => {
+          // The listener removes its own path on stop.
+          setTimeout(() => {
+            listener.stop(true);
+          }, 300);
+        },
+      },
+    });
+
+    onTestFinished(() => {
+      listener.stop(true);
+    });
+
+    const stopped = await runCli(['server', 'stop', '--socket', socketPath], directory);
+
+    expect(stopped).toEqual({
+      exitCode: 0,
+      stdout: `Stopped the server on ${socketPath}.\n`,
+      stderr: '',
+    });
   },
   cliTestTimeoutMs,
 );
