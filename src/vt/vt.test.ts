@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 
+import { CellFlag, CellWidth, cellWidthMask, cellWords, ModeFlag } from '../rows/rows.ts';
 import type { Frame, StableRows, Terminal } from './vt.ts';
-import { CellFlag, CellWidth, cellWidthMask, cellWords, createTerminal, ModeFlag } from './vt.ts';
+import { createTerminal } from './vt.ts';
 
 type DecodedRows = Pick<Frame, 'cells' | 'graphemes' | 'rowCount'>;
 

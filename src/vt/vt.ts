@@ -4,6 +4,7 @@ import { dlopen, FFIType, toArrayBuffer } from 'bun:ffi';
 // path of the built file.
 import libraryPath from '../../build/libphi-vt.so' with { type: 'file' };
 import { invariant } from '../invariant.ts';
+import { cellWords } from '../rows/rows.ts';
 
 export type CreateTerminalResult =
   | { ok: true; terminal: Terminal }
@@ -38,10 +39,7 @@ export interface Scrollback {
 export interface Frame {
   // The number of rows in cells.
   rowCount: number;
-  // Each changed row as one word with its viewport row, then cellWords words per column: the
-  // base code point, the foreground color, the background color, and the CellFlag and CellWidth
-  // bits. A color is 0 for the default color, 1-256 for a palette index plus 1, and 0x1000000
-  // plus the 0xRRGGBB value for an RGB color.
+  // Each changed row as one word with its viewport row, then cellWords words per column.
   cells: Uint32Array;
   // Each cluster longer than one code point as one word with the index in cells of its cell's
   // code point, one word with its length, then its code points, base first.
@@ -71,47 +69,6 @@ const firstTextBufferBytes = 4096;
 
 // pane_resize returns this when libghostty-vt refuses the size.
 const resizeRefused = -2;
-
-// Words per cell in Frame.cells.
-export const cellWords = 4;
-
-// Bits of a cell's flags word.
-export enum CellFlag {
-  bold = 0x1,
-  faint = 0x2,
-  italic = 0x4,
-  underline = 0x8,
-  inverse = 0x10,
-  // The cell's whole cluster is in Frame.graphemes.
-  grapheme = 0x1_00_00,
-}
-
-// A cell's width is its flags word masked with cellWidthMask. A wide character's cell is followed
-// by a spacer tail cell. A spacer head ends a row whose wide character wrapped to the next row.
-export enum CellWidth {
-  narrow = 0,
-  wide = 0x1_00,
-  spacerTail = 0x2_00,
-  spacerHead = 0x3_00,
-}
-
-export const cellWidthMask = 0x3_00;
-
-// Bits of Frame.modes.
-export enum ModeFlag {
-  applicationCursorKeys = 0x1,
-  bracketedPaste = 0x2,
-  x10Mouse = 0x4,
-  normalMouse = 0x8,
-  buttonMouse = 0x10,
-  anyMouse = 0x20,
-  sgrMouse = 0x40,
-  alternateScreen = 0x80,
-  // A render hold, such as synchronized output (mode 2026), keeps the frame the program last
-  // finished. The terminal has no clock, so the caller ends a hold that lasts too long with
-  // endRenderHold.
-  renderHeld = 0x1_00,
-}
 
 // pane_frame returns these instead of a row count.
 const frameDoesNotFit = -1;

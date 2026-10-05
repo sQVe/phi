@@ -84,9 +84,10 @@ it.each(['lint', 'style:check'])(
           "import { dlopen } from 'bun:ffi';",
           "import { readFile } from 'node:fs/promises';",
           "import { invariant } from '../invariant.ts';",
+          "import { rows } from '../rows/rows.ts';",
           "import { bindings } from './bindings.ts';",
           "import { nested } from './nested/deep';",
-          'export const vt = [dlopen, readFile, invariant, bindings, nested];',
+          'export const vt = [dlopen, readFile, invariant, rows, bindings, nested];',
         ],
         0,
       ],
@@ -101,7 +102,7 @@ it.each(['lint', 'style:check'])(
         [
           "import { expect, it } from 'bun:test';",
           "import { vt } from './vt.ts';",
-          "it('loads', () => expect(vt).toHaveLength(5));",
+          "it('loads', () => expect(vt).toHaveLength(6));",
         ],
         0,
       ],
@@ -278,7 +279,7 @@ it.each(['lint', 'style:check'])(
         [
           "import { ids } from '../ids.ts';",
           "import type { State } from '../store/store.ts';",
-          "export * from '../rows/rows.ts';",
+          "export * from '../layout.ts';",
           "import { index } from '../index.ts';",
           'export const refused: [number, State?] = [ids, index];',
         ],
@@ -543,7 +544,7 @@ const moduleNames = Object.keys(moduleEntries) as ModuleName[];
 const allowedEdges: Record<ModuleName, ModuleName[]> = {
   ids: [],
   invariant: [],
-  vt: ['invariant'],
+  vt: ['invariant', 'rows'],
   rows: ['ids', 'invariant'],
   layout: ['ids', 'invariant'],
   store: ['ids', 'invariant', 'layout'],
