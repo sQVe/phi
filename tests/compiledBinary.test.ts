@@ -1,10 +1,14 @@
-import { afterAll, beforeAll, expect, it } from 'bun:test';
-import { cp, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { afterAll, beforeAll, expect, it, onTestFinished } from 'bun:test';
+import { existsSync } from 'node:fs';
+import { cp, mkdir, mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { z } from 'zod';
+
 import packageJson from '../package.json' with { type: 'json' };
+import { endServersIn, isRunning, serverProcessesIn, waitFor } from './serverProcesses.ts';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 
@@ -27,6 +31,7 @@ const pinnedGhosttyCommit = async () => {
 const compileFromCopy = async () => {
   await cp(join(root, 'src'), join(source, 'src'), { recursive: true });
   await cp(join(root, 'package.json'), join(source, 'package.json'));
+  await symlink(join(root, 'node_modules'), join(source, 'node_modules'));
   await mkdir(join(source, 'build'));
   await cp(join(root, 'build/libphi-vt.so'), join(source, 'build/libphi-vt.so'));
 
@@ -90,3 +95,46 @@ it('prints the version and the pinned Ghostty commit when run from source', asyn
     new RegExp(`^phi \\S+ \\(ghostty ${await pinnedGhosttyCommit()}\\)\\n$`),
   );
 });
+
+const startOutputSchema = z.object({ socket: z.string(), pid: z.number().int().positive() });
+
+it('starts and stops a server', async () => {
+  const state = await mkdtemp(join(tmpdir(), 'phi-binary-server-'));
+  const socketPath = join(state, 'run', 'phi.sock');
+
+  const runBinary = (commandArguments: string[]) =>
+    Bun.spawnSync([join(directory, 'phi'), 'server', ...commandArguments, '--socket', socketPath], {
+      cwd: state,
+      env: { ...process.env, XDG_STATE_HOME: join(state, 'state') },
+      stdin: 'ignore',
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+  onTestFinished(async () => {
+    await endServersIn(state);
+    await rm(state, { recursive: true, force: true });
+  });
+
+  const started = runBinary(['start', '--json']);
+
+  expect({ exitCode: started.exitCode, stderr: started.stderr.toString() }).toEqual({
+    exitCode: 0,
+    stderr: '',
+  });
+
+  const output = startOutputSchema.parse(JSON.parse(started.stdout.toString()));
+
+  expect(output.socket).toBe(socketPath);
+  expect(serverProcessesIn(state)).toEqual([output.pid]);
+
+  const stopped = runBinary(['stop', '--json']);
+
+  expect({ exitCode: stopped.exitCode, stdout: stopped.stdout.toString() }).toEqual({
+    exitCode: 0,
+    stdout: '{"stopped":true}\n',
+  });
+
+  expect(existsSync(socketPath)).toBe(false);
+  expect(await waitFor(() => !isRunning(output.pid))).toBe(true);
+}, 30_000);

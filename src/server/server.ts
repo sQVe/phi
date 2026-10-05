@@ -11,6 +11,9 @@ import { spawnPane } from './pane.ts';
 import type { PaneRuntime } from './pane.ts';
 import { claimSocketPath, restrictSocket } from './socketPath.ts';
 
+export { createLog, logPathFor } from './log.ts';
+export { claimSocketPath, socketPathFor } from './socketPath.ts';
+
 interface ServerOptions {
   socketPath: string;
   version: BuildVersion;
