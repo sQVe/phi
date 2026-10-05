@@ -141,12 +141,23 @@ it('refuses a hello from another build and closes once the refusal is written', 
   expect(received).toEqual([]);
 });
 
-it('closes a connection whose first message is not hello, without an answer', () => {
+it('passes on stop as the first message without a hello', () => {
   const socket = createSocket();
   const received: ControlMessage[] = [];
   const { connection } = open(socket, (message) => received.push(message));
 
   connection.receive(frameOf({ type: 'stop' }));
+
+  expect(received).toEqual([{ type: 'stop' }]);
+  expect(socket.written).toEqual([]);
+});
+
+it('closes a connection whose first message is not hello or stop, without an answer', () => {
+  const socket = createSocket();
+  const received: ControlMessage[] = [];
+  const { connection } = open(socket, (message) => received.push(message));
+
+  connection.receive(frameOf({ type: 'resync' }));
   connection.receive(frameOf(hello));
 
   expect(socket.written).toEqual([]);

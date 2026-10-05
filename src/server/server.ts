@@ -9,10 +9,10 @@ import type { Connection } from './connection.ts';
 import type { Log } from './log.ts';
 import { spawnPane } from './pane.ts';
 import type { PaneRuntime } from './pane.ts';
-import { claimSocketPath, restrictSocket } from './socketPath.ts';
+import { claimSocketPath, listeningPathFor, publishSocket } from './socketPath.ts';
 
 export { createLog, logPathFor } from './log.ts';
-export { claimSocketPath, socketPathFor } from './socketPath.ts';
+export { socketPathFor } from './socketPath.ts';
 
 interface ServerOptions {
   socketPath: string;
@@ -34,10 +34,14 @@ export interface Server {
 
 type ClaimFailure = Extract<Awaited<ReturnType<typeof claimSocketPath>>, { ok: false }>;
 
+type PublishFailure = Extract<ReturnType<typeof publishSocket>, { ok: false }>;
+
 type RunServerResult =
   | { ok: true; server: Server }
   | ClaimFailure
-  | { ok: false; reason: 'listenFailed'; message: string };
+  | PublishFailure
+  | { ok: false; reason: 'listenFailed'; message: string }
+  | { ok: false; reason: 'paneFailedToStart'; message: string };
 
 interface ConnectionData {
   id: number;
@@ -56,11 +60,15 @@ interface Runtime {
 
 interface ServerContext {
   options: ServerOptions;
+  // The claimed socket path with its symlinks resolved. The server binds and removes only this.
+  socketPath: string;
   // The store's current state. Only report and dispatch replace it.
   state: State;
   runtime: Runtime;
   stopped: PromiseWithResolvers<undefined>;
   releaseSignals: () => void;
+  // Why the first pane failed to start, so runServer can report it.
+  paneStartFailure: string | undefined;
 }
 
 // Effects report facts with this, and report starts effects, so effects take it as an argument.
@@ -96,6 +104,7 @@ const startPane = (context: ServerContext, pane: Pane, report: Report): void => 
 
   if (!spawned.ok) {
     log.error('The pane failed to start.', { paneId: id, message: spawned.message });
+    context.paneStartFailure = spawned.message;
     report(context, { type: 'paneFailedToStart', paneId: id, generation });
 
     return;
@@ -132,7 +141,7 @@ const shutDown = async (context: ServerContext): Promise<void> => {
 
     runtime.connections.clear();
     runtime.listener?.stop(true);
-    rmSync(options.socketPath, { force: true });
+    rmSync(context.socketPath, { force: true });
     options.log.info('Stopped the server.');
   } finally {
     context.releaseSignals();
@@ -233,10 +242,10 @@ const closeConnection = (context: ServerContext, id: number): void => {
   context.runtime.connections.delete(id);
 };
 
-const listen = (context: ServerContext): Listener | string => {
+const listen = (context: ServerContext, path: string): Listener | string => {
   try {
     return Bun.listen<ConnectionData>({
-      unix: context.options.socketPath,
+      unix: path,
       socket: {
         open: (socket) => {
           openConnection(context, socket);
@@ -299,7 +308,7 @@ const serverOf = (context: ServerContext): Server => ({
 });
 
 // Runs a server in this process on the socket path, with one pane. It stops on a stop message,
-// SIGTERM, SIGINT, or the shell exiting.
+// SIGTERM, SIGINT, or the shell exiting. When the pane fails to start, it stops before it returns.
 export const runServer = async (options: ServerOptions): Promise<RunServerResult> => {
   const claimed = await claimSocketPath(options.socketPath);
 
@@ -307,29 +316,47 @@ export const runServer = async (options: ServerOptions): Promise<RunServerResult
     return claimed;
   }
 
+  const { path: socketPath } = claimed;
+
   const context: ServerContext = {
     options,
+    socketPath,
     state: createState(),
     runtime: { panes: new Map(), connections: new Map(), listener: undefined, nextConnectionId: 1 },
     stopped: Promise.withResolvers(),
     releaseSignals: () => undefined,
+    paneStartFailure: undefined,
   };
 
-  const listener = listen(context);
+  const listeningPath = listeningPathFor(socketPath);
+  const listener = listen(context, listeningPath);
 
   if (typeof listener === 'string') {
     return {
       ok: false,
       reason: 'listenFailed',
-      message: `Cannot listen on ${options.socketPath}: ${listener}`,
+      message: `Cannot listen on ${socketPath}: ${listener}`,
     };
   }
 
+  const published = publishSocket(listeningPath, socketPath);
+
+  if (!published.ok) {
+    listener.stop(true);
+
+    return published;
+  }
+
   context.runtime.listener = listener;
-  restrictSocket(options.socketPath);
   handleSignals(context);
-  options.log.info('Listening.', { socketPath: options.socketPath });
+  options.log.info('Listening.', { socketPath });
   dispatch(context, { type: 'startPane' });
+
+  if (context.paneStartFailure !== undefined) {
+    await context.stopped.promise;
+
+    return { ok: false, reason: 'paneFailedToStart', message: context.paneStartFailure };
+  }
 
   return { ok: true, server: serverOf(context) };
 };

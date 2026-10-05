@@ -21,7 +21,7 @@ interface ConnectionOptions {
   version: BuildVersion;
   log: Log;
   queueLimitBytes: number;
-  // Gets each control message after the handshake.
+  // Gets each control message after the handshake, and a stop that comes in place of hello.
   onMessage: (message: ControlMessage, connection: Connection) => void;
 }
 
@@ -79,7 +79,7 @@ export const createConnection = (options: ConnectionOptions): Connection => {
   };
 
   const refuseStart = (fields: Record<string, unknown>): void => {
-    log.warn('Closed a connection that did not start with hello.', fields);
+    log.warn('Closed a connection that did not start with hello or stop.', fields);
     close();
   };
 
@@ -98,6 +98,13 @@ export const createConnection = (options: ConnectionOptions): Connection => {
   };
 
   const greet = (message: ControlMessage): void => {
+    // A stop needs no handshake, so `phi server stop` of any build can end this server.
+    if (message.type === 'stop') {
+      options.onMessage(message, connection);
+
+      return;
+    }
+
     if (message.type !== 'hello') {
       refuseStart({ type: message.type });
 

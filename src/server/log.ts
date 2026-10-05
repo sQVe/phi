@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, renameSync, statSync } from 'node:fs';
+import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, renameSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -14,8 +14,14 @@ export interface Log {
   error: Write;
 }
 
+type CreateLogResult =
+  | { ok: true; log: Log }
+  | { ok: false; reason: 'logUnavailable'; message: string };
+
 // 5 MiB.
 const maxLogBytes = 0x50_00_00;
+
+const logFileMode = 0o600;
 
 const encoder = new TextEncoder();
 
@@ -29,11 +35,28 @@ export const logPathFor = (stateHome: string | undefined, home: string): string 
   return join(state, 'phi', 'server.log');
 };
 
-const sizeOf = (path: string): number => statSync(path, { throwIfNoEntry: false })?.size ?? 0;
+const describeError = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
 
-// Rotates to one old file before a line would take the log past limitBytes.
-export const createLog = (path: string, now: () => number, limitBytes = maxLogBytes): Log => {
-  let size = sizeOf(path);
+// Creates the log file if it is missing, so a path the server cannot write fails before it starts.
+const openedSize = (path: string): number | string => {
+  try {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+
+    const descriptor = openSync(path, 'a', logFileMode);
+
+    try {
+      return fstatSync(descriptor).size;
+    } finally {
+      closeSync(descriptor);
+    }
+  } catch (error) {
+    return describeError(error);
+  }
+};
+
+const logWriter = (path: string, now: () => number, limitBytes: number, openSize: number): Log => {
+  let size = openSize;
 
   const append = (line: string): void => {
     const lineBytes = encoder.encode(line).length;
@@ -45,7 +68,7 @@ export const createLog = (path: string, now: () => number, limitBytes = maxLogBy
       size = 0;
     }
 
-    appendFileSync(path, line, { mode: 0o600 });
+    appendFileSync(path, line, { mode: logFileMode });
     size += lineBytes;
   };
 
@@ -70,4 +93,23 @@ export const createLog = (path: string, now: () => number, limitBytes = maxLogBy
     warn: writer('warn'),
     error: writer('error'),
   };
+};
+
+// Rotates to one old file before a line would take the log past limitBytes.
+export const createLog = (
+  path: string,
+  now: () => number,
+  limitBytes = maxLogBytes,
+): CreateLogResult => {
+  const size = openedSize(path);
+
+  if (typeof size === 'string') {
+    return {
+      ok: false,
+      reason: 'logUnavailable',
+      message: `Cannot write the log ${path}: ${size}`,
+    };
+  }
+
+  return { ok: true, log: logWriter(path, now, limitBytes, size) };
 };
