@@ -107,6 +107,10 @@ export enum ModeFlag {
   anyMouse = 0x20,
   sgrMouse = 0x40,
   alternateScreen = 0x80,
+  // A render hold, such as synchronized output (mode 2026), keeps the frame the program last
+  // finished. The terminal has no clock, so the caller ends a hold that lasts too long with
+  // endRenderHold.
+  renderHeld = 0x1_00,
 }
 
 // pane_frame returns these instead of a row count.
@@ -210,6 +214,7 @@ const loadLibrary = () =>
       returns: FFIType.i64,
     },
     pane_mark_all_dirty: { args: [FFIType.ptr], returns: FFIType.void },
+    pane_end_render_hold: { args: [FFIType.ptr], returns: FFIType.void },
     pane_stable_rows: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.bool },
     pane_scrollback: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.void },
     shim_ghostty_commit: { args: [], returns: FFIType.cstring },
@@ -314,7 +319,8 @@ export class Terminal {
     }
   }
 
-  // Returns the rows that changed since the last frame. The next frame reuses the arrays.
+  // Returns the rows that changed since the last frame. The next frame reuses the arrays. During a
+  // render hold it returns rows and the cursor from the frame captured when the hold began.
   frame(): Frame {
     const handle = this.live();
 
@@ -341,6 +347,11 @@ export class Terminal {
   // The next frame returns every row.
   markAllDirty(): void {
     this.symbols.pane_mark_all_dirty(this.live());
+  }
+
+  // Turns off synchronized output, so the next frame shows the screen as it is.
+  endRenderHold(): void {
+    this.symbols.pane_end_render_hold(this.live());
   }
 
   // Numbers rows by following the active top from the last call, so the server must call this

@@ -445,6 +445,105 @@ it('returns every row after markAllDirty', () => {
   expect(rowText(rows.get(0) ?? [])).toBe('hello');
 });
 
+const isHeld = (frame: Frame) => (frame.modes & ModeFlag.renderHeld) !== 0;
+
+describe('a render hold', () => {
+  const startHold = '\u001B[?2026h';
+  const endHold = '\u001B[?2026l';
+  const clearScreen = '\u001B[2J\u001B[H';
+
+  it('hides a redraw split across two writes until the program ends the hold', () => {
+    using terminal = openTerminal();
+
+    writeChunks(terminal, ['old']);
+    terminal.frame();
+    writeChunks(terminal, [`${startHold}${clearScreen}new`]);
+
+    const during = terminal.frame();
+
+    expect(during.rowCount).toBe(0);
+    expect(isHeld(during)).toBe(true);
+
+    writeChunks(terminal, [`\r\nfinished${endHold}`]);
+
+    const after = terminal.frame();
+
+    expect(rowTexts(after).slice(0, 2)).toEqual(['new', 'finished']);
+    expect(isHeld(after)).toBe(false);
+  });
+
+  it('returns the frame from the start of the hold when the hold starts in the middle of a write', () => {
+    using terminal = openTerminal();
+
+    writeChunks(terminal, [`old${startHold}${clearScreen}new\r\nhalf`]);
+
+    const frame = terminal.frame();
+
+    expect(rowText(decodeRows(frame, 80).get(0) ?? [])).toBe('old');
+    expect(rowTexts(frame)).not.toContain('half');
+    expect(frame.cursor).toEqual({ x: 3, y: 0, visible: true });
+  });
+
+  it.each([
+    ['a full reset', (terminal: Terminal) => writeChunks(terminal, ['\u001Bcdone'])],
+    ['a resize', (terminal: Terminal) => terminal.resize(80, 25)],
+  ])('shows the screen as it is after %s ends the hold', (_name, end) => {
+    using terminal = openTerminal();
+
+    writeChunks(terminal, [`${startHold}${clearScreen}done`]);
+    terminal.frame();
+    end(terminal);
+
+    const frame = terminal.frame();
+
+    expect(rowText(decodeRows(frame, 80).get(0) ?? [])).toBe('done');
+    expect(isHeld(frame)).toBe(false);
+  });
+
+  it('shows the screen as it is after endRenderHold ends a hold the program never ends', () => {
+    using terminal = openTerminal();
+
+    writeChunks(terminal, [`${startHold}${clearScreen}stuck`]);
+    terminal.frame();
+    terminal.endRenderHold();
+
+    const frame = terminal.frame();
+
+    expect(rowText(decodeRows(frame, 80).get(0) ?? [])).toBe('stuck');
+    expect(isHeld(frame)).toBe(false);
+  });
+
+  it('holds again when the program starts a new hold after endRenderHold', () => {
+    using terminal = openTerminal();
+
+    writeChunks(terminal, [startHold]);
+    terminal.endRenderHold();
+    terminal.frame();
+    writeChunks(terminal, [`${startHold}${clearScreen}next`]);
+
+    const frame = terminal.frame();
+
+    expect(frame.rowCount).toBe(0);
+    expect(isHeld(frame)).toBe(true);
+  });
+
+  it('returns every row of the captured frame after markAllDirty', () => {
+    using terminal = openTerminal();
+
+    writeChunks(terminal, ['old']);
+    terminal.frame();
+    writeChunks(terminal, [`${startHold}${clearScreen}new`]);
+    terminal.markAllDirty();
+
+    const frame = terminal.frame();
+    const rows = decodeRows(frame, 80);
+
+    expect([...rows.keys()]).toEqual(Array.from({ length: 24 }, (_, row) => row));
+    expect(rowText(rows.get(0) ?? [])).toBe('old');
+    expect(rowTexts(frame)).not.toContain('new');
+  });
+});
+
 it('keeps the epoch and moves the active top one row per scrolled line', () => {
   using terminal = openTerminal();
   const first = terminal.stableRows();

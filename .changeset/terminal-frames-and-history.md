@@ -8,3 +8,6 @@ limit, and a range of rows can be read again by number, also from history.
 
 New terminals turn on grapheme clustering (mode 2027), so an emoji sequence joined with zero-width
 joiners stays in one cell.
+
+While a program holds output with synchronized output (mode 2026), frames keep showing the last
+finished screen, so a redraw split across several writes never shows half drawn.
