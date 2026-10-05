@@ -24,6 +24,9 @@ type Outcome = { ok: true } | { ok: false; message: string };
 
 type Environment = Record<string, string | undefined>;
 
+// How a stopping server let go of its socket path.
+type Release = 'removed' | 'leftSocket';
+
 // Why a server that start spawned did not become ready.
 type Unready = { kind: 'exited' } | { kind: 'timedOut' } | { kind: 'badReadiness'; line: string };
 
@@ -204,9 +207,7 @@ const runInForeground = async (context: ServerContext): Promise<Outcome> => {
     `Server ${process.pid} runs on ${socketPath}.`,
   );
 
-  await result.server.stopped;
-
-  return { ok: true };
+  return result.server.stopped;
 };
 
 // A compiled binary runs its embedded entry file, which it serves from /$bunfs/, on its own.
@@ -324,8 +325,41 @@ const startInBackground = async (context: ServerContext): Promise<Outcome> => {
   return { ok: true };
 };
 
-const socketGone = (socketPath: string): true | undefined =>
-  lstatSync(socketPath, { throwIfNoEntry: false }) === undefined ? true : undefined;
+const socketInode = (socketPath: string): bigint | undefined =>
+  lstatSync(socketPath, { bigint: true, throwIfNoEntry: false })?.ino;
+
+// Only a refused connection proves that no server listens any more. The probe sends nothing and
+// closes at once, so a server that is still stopping drops it with its other connections.
+const connectionRefused = async (socketPath: string): Promise<boolean> => {
+  try {
+    const socket = await Bun.connect({ unix: socketPath, socket: { data: () => undefined } });
+
+    socket.end();
+
+    return false;
+  } catch (error) {
+    return error instanceof Error && 'code' in error && error.code === 'ECONNREFUSED';
+  }
+};
+
+// Works for a server of any build. A server closes its listener just before it removes its
+// socket, so a refused socket gets one more interval to disappear. A new server may claim the path
+// meanwhile, so only the same socket counts as left behind.
+const releasedPath = async (socketPath: string): Promise<Release | undefined> => {
+  const probed = socketInode(socketPath);
+
+  if (probed === undefined) {
+    return 'removed';
+  }
+
+  if (!(await connectionRefused(socketPath))) {
+    return undefined;
+  }
+
+  await Bun.sleep(pollIntervalMs);
+
+  return socketInode(socketPath) === probed ? 'leftSocket' : 'removed';
+};
 
 const stopServer = async (context: ServerContext): Promise<Outcome> => {
   const { socketPath } = context;
@@ -335,14 +369,21 @@ const stopServer = async (context: ServerContext): Promise<Outcome> => {
     return { ok: false, message: `No server runs on ${socketPath}.` };
   }
 
-  const gone = await poll(() => socketGone(socketPath), serverStopTimeoutMs);
+  const released = await poll(() => releasedPath(socketPath), serverStopTimeoutMs);
 
   sent.close();
 
-  if (gone === undefined) {
+  if (released === undefined) {
     return {
       ok: false,
       message: `The server on ${socketPath} did not stop within ${seconds(serverStopTimeoutMs)} seconds.`,
+    };
+  }
+
+  if (released === 'leftSocket') {
+    return {
+      ok: false,
+      message: `The server stopped, but left its socket at ${socketPath}. The next start removes it.`,
     };
   }
 

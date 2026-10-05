@@ -1,7 +1,7 @@
 import { expect, it, onTestFinished, spyOn } from 'bun:test';
 import { once } from 'node:events';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { mkdir, mkdtemp, rename, rm, symlink } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rename, rm, symlink } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,6 +16,7 @@ import type { Log } from '../src/server/log.ts';
 import * as processGroups from '../src/server/processGroups.ts';
 import { runServer } from '../src/server/server.ts';
 import type { Server } from '../src/server/server.ts';
+import { claimSocketPath } from '../src/server/socketPath.ts';
 
 interface TestClient {
   messages: ControlMessage[];
@@ -59,6 +60,19 @@ const commandLineOf = (processId: string): string | undefined => {
 
 const processesRunning = (commandLine: string): string[] =>
   readdirSync('/proc').filter((name) => commandLineOf(name) === commandLine);
+
+// True until the process is reaped, so an exited process that nobody has waited for still counts.
+const processExists = (processId: number): boolean => {
+  try {
+    process.kill(processId, 0);
+
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const isRoot = process.getuid?.() === 0;
 
 const openLog = (path: string): Log => {
   const created = createLog(path, Date.now);
@@ -309,8 +323,8 @@ it('welcomes a client from the same build and removes the socket when it stops',
   expect(await client.nextMessage()).toEqual({ type: 'welcome' });
 
   server.stop();
-  await server.stopped;
 
+  expect(await server.stopped).toEqual({ ok: true });
   expect(existsSync(socketPath)).toBe(false);
 });
 
@@ -479,6 +493,8 @@ it('ends the pane, closes connections, and removes the socket when stopping the 
   server.writeToPane(`exec ${command}\n`);
   await waitFor(() => processesRunning(command).length > 0);
 
+  const [shellProcess] = processesRunning(command);
+
   const scan = spyOn(processGroups, 'sessionGroups').mockImplementation(() => {
     throw new Error('No /proc here.');
   });
@@ -488,12 +504,14 @@ it('ends the pane, closes connections, and removes the socket when stopping the 
   });
 
   server.stop();
-  await server.stopped;
-  await client.closed;
 
+  const stopped = await server.stopped;
+
+  expect(processExists(Number(shellProcess))).toBe(false);
+  await client.closed;
+  expect(stopped).toMatchObject({ ok: false, reason: 'cleanupFailed' });
   expect(existsSync(socketPath)).toBe(false);
   expect(logLinesOf(logPath).some((line) => line.fields.error === 'No /proc here.')).toBe(true);
-  await waitFor(() => processesRunning(command).length === 0, 1000);
 });
 
 it('starts a new server on the socket path after the first one stops', async () => {
@@ -510,3 +528,34 @@ it('starts a new server on the socket path after the first one stops', async () 
 
   expect(await client.nextMessage()).toEqual({ type: 'welcome' });
 });
+
+it.skipIf(isRoot)(
+  'releases the lock and reports the failure when it cannot remove its socket',
+  async () => {
+    const directory = await temporaryDirectory();
+    const { server, socketPath, logPath } = await startServer(directory);
+    const socketDirectory = join(directory, 'run');
+
+    await chmod(socketDirectory, 0o500);
+
+    let stopped: Awaited<Server['stopped']>;
+
+    try {
+      server.stop();
+      stopped = await server.stopped;
+    } finally {
+      await chmod(socketDirectory, 0o700);
+    }
+
+    // The socket is left behind, and the next claim removes it as stale.
+    const claimed = await claimSocketPath(socketPath);
+
+    if (claimed.ok) {
+      claimed.release();
+    }
+
+    expect(stopped).toMatchObject({ ok: false, reason: 'cleanupFailed' });
+    expect(logLinesOf(logPath).some((line) => line.level === 'error')).toBe(true);
+    expect(claimed).toMatchObject({ ok: true, path: socketPath });
+  },
+);
