@@ -7,7 +7,7 @@ type LogFields = Record<string, unknown>;
 
 type Write = (message: string, fields?: LogFields) => void;
 
-interface Log {
+export interface Log {
   debug: Write;
   info: Write;
   warn: Write;
