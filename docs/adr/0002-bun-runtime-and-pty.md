@@ -1,30 +1,26 @@
 # ADR 0002: Bun as runtime, package manager, test runner, and PTY
 
-- Status: Accepted
-- Date: 2026-10-02
+**Date**: 2026-10-02\
+**Status**: Accepted\
+**Related**: [OpenTUI runtime support](https://opentui.com/docs/getting-started/runtime-support/)
 
 ## Context
 
-- Phi runs shells in pseudo-terminals (PTYs) and draws its UI with OpenTUI. OpenTUI's native
-  renderer needs Bun; on Node it needs an experimental FFI flag.
-- The spike tested PTYs under Bun. `Bun.spawn` with the `terminal` option spawned, read, wrote, and
-  resized a PTY. node-pty got no output under Bun, and its resize failed with `EBADF`.
-- Phi ships as one program that users download, not as a package on npm.
-- Phi is for Linux first. macOS may follow, so Linux-only calls are worth avoiding where that is
-  cheap.
+Phi runs shells in pseudo-terminals (PTYs) and draws its UI with OpenTUI. OpenTUI's native renderer
+needs Bun. On Node it needs an experimental FFI flag.
 
-## Options considered
+The spike tested PTYs under Bun. `Bun.spawn` with the `terminal` option spawned, read, wrote, and
+resized a PTY. node-pty got no output under Bun, and its resize failed with `EBADF`.
 
-- Node with node-pty and Vitest. Rejected: OpenTUI needs an experimental flag on Node, and the app
-  would need a second runtime next to the Bun tooling.
-- Bun with node-pty. Rejected: node-pty did not work under Bun in the spike.
-- Bun as runtime, package manager, test runner, and PTY, built into one binary. Chosen: one runtime
-  covers the tooling, the app, the PTYs, and every test.
+Phi ships as one program that users download, not as a package on npm.
+
+Phi is for Linux first. macOS may follow, so Linux-only calls are worth avoiding where that is
+cheap.
 
 ## Decision
 
 Phi uses Bun as its runtime, package manager, test runner, and PTY layer, and ships as one binary
-built with `bun build --compile`.
+built with `bun build --compile`. One runtime covers the tooling, the app, the PTYs, and every test.
 
 ### Toolchain
 
@@ -37,8 +33,8 @@ built with `bun build --compile`.
 
 ### PTYs
 
-- Phi spawns each pane's process with `Bun.spawn` and its `terminal` option. Do not add node-pty or
-  another PTY package. Lint refuses imports of node-pty and its forks.
+Phi spawns each pane's process with `Bun.spawn` and its `terminal` option. Do not add node-pty or
+another PTY package. Lint refuses imports of node-pty and its forks.
 
 ### Platforms and releases
 
@@ -46,17 +42,30 @@ built with `bun build --compile`.
 - Prefer calls that also exist on macOS when the choice is cheap.
 - Releases are binaries attached to GitHub releases.
 
-## Tradeoffs
+## Consequences
+
+### Positive
 
 - The tooling, the app, the PTYs, and all tests share one runtime and one test runner.
 - Users install one file and need no runtime of their own.
-- Cost: Phi depends on Bun's PTY support. A bug there has no Node fallback.
-- Cost: GitHub's dependency graph does not read `bun.lock`, so dependency review does not cover
-  locked package versions. A scheduled `bun audit` covers them instead.
-- Cost: tools that assume Node need `bunx --bun`.
-- Cost: Oxlint's test rules do not recognize `bun:test`, so test files get no test-specific lint.
-- Cost: a compiled binary contains the whole runtime, so it is large.
 
-## See also
+### Negative
 
-- [OpenTUI runtime support](https://opentui.com/docs/getting-started/runtime-support/)
+- Phi depends on Bun's PTY support. A bug there has no Node fallback.
+- GitHub's dependency graph does not read `bun.lock`, so dependency review does not cover locked
+  package versions. A scheduled `bun audit` covers them instead.
+- Tools that assume Node need `bunx --bun`.
+- Oxlint's test rules do not recognize `bun:test`, so test files get no test-specific lint.
+- A compiled binary contains the whole runtime, so it is large.
+
+## Alternatives considered
+
+### Node with node-pty and Vitest
+
+Run Phi on Node, with node-pty for PTYs and Vitest for tests. Rejected because OpenTUI needs an
+experimental flag on Node, and the app would need a second runtime next to the Bun tooling.
+
+### Bun with node-pty
+
+Run Phi on Bun, with node-pty for PTYs. Rejected because node-pty did not work under Bun in the
+spike.

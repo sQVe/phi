@@ -1,34 +1,28 @@
 # ADR 0006: One server store with pure transitions and a typed change feed
 
-- Status: Accepted
-- Date: 2026-10-02
+**Date**: 2026-10-02\
+**Status**: Accepted
 
 ## Context
 
-- The server holds workspaces, tabs, panes, layout, focus, and later integration data such as pull
-  request state. Clients, the CLI, and agents read it and ask to change it.
-- Many changes start work that takes time and can fail, such as spawning a PTY or stopping a
-  process. Their results arrive later and may arrive after the pane they belong to is gone.
-- One pane or client failing must never stop the server.
-- PTYs, running processes, and parser grids cannot be saved or replayed. After a restart, only
-  structure, layout, and each pane's working directory can come back.
+The server holds workspaces, tabs, panes, layout, focus, and later integration data such as pull
+request state. Clients, the CLI, and agents read it and ask to change it.
 
-## Options considered
+Many changes start work that takes time and can fail, such as spawning a PTY or stopping a process.
+Their results arrive later and may arrive after the pane they belong to is gone.
 
-- Objects with methods, such as pane and tab classes that own their PTYs and change themselves.
-  Rejected: state and handles mix, so a change is hard to test without real processes, and no single
-  place orders changes.
-- An event log, where every change is an appended event and state is folded from the log. Rejected:
-  the log cannot replay what matters most, the PTYs and processes, and terminal output already has
-  its own row protocol. A log adds schema versions, compaction, and replay rules for benefits that
-  snapshots and a change feed give at lower cost.
-- One store with pure transitions and a typed change feed. Chosen: every change goes through one
-  place, transitions test without I/O, and clients follow the same changes the store makes.
+One pane or client failing must never stop the server.
+
+PTYs, running processes, and parser grids cannot be saved or replayed. After a restart, only
+structure, layout, and each pane's working directory can come back.
 
 ## Decision
 
 Each server has one store. Pure transitions take the current state and an intent or fact, and return
 the next state and typed changes. The server keeps no event log.
+
+Every change goes through one place, transitions test without I/O, and clients follow the same
+changes the store makes.
 
 ### Store
 
@@ -55,13 +49,32 @@ the next state and typed changes. The server keeps no event log.
 - A client that sees a gap in revisions asks for a new snapshot.
 - Row updates are binary and carry pane and epoch identity, separate from the store's revisions.
 
-## Tradeoffs
+## Consequences
+
+### Positive
 
 - Transitions are plain functions, so tests cover layout, focus, and lifecycle without processes.
 - Clients, the CLI, and agents follow one ordered feed.
 - A late result cannot change a pane that has moved on, because facts carry generations.
-- Cost: every long-running action takes two steps, the intent and the fact that reports its result,
-  with states in between.
-- Cost: there is no history to replay. Debugging relies on tests and logs, and undo needs its own
-  design.
-- Cost: an audit trail added later would start empty.
+
+### Negative
+
+- Every long-running action takes two steps, the intent and the fact that reports its result, with
+  states in between.
+- There is no history to replay. Debugging relies on tests and logs, and undo needs its own design.
+- An audit trail added later would start empty.
+
+## Alternatives considered
+
+### Objects with methods
+
+Objects with methods, such as pane and tab classes that own their PTYs and change themselves.
+Rejected because state and handles mix, so a change is hard to test without real processes, and no
+single place orders changes.
+
+### An event log
+
+Every change is an appended event, and state is folded from the log. Rejected because the log cannot
+replay what matters most, the PTYs and processes, and terminal output already has its own row
+protocol. A log adds schema versions, compaction, and replay rules for benefits that snapshots and a
+change feed give at lower cost.

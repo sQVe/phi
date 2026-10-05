@@ -1,41 +1,31 @@
 # ADR 0007: Results for expected failures, exceptions for bugs, and checked boundaries
 
-- Status: Accepted
-- Date: 2026-10-02
+**Date**: 2026-10-02\
+**Status**: Accepted
 
 ## Context
 
-- The server runs many panes and clients at once. One failure must never stop the others.
-- Data enters from sockets, config files, the state file, and the output of other programs. None of
-  it can be trusted until it is parsed.
-- Most code transforms data, but a few hot paths parse and draw terminal output on every keystroke.
-- Agents write much of the code, so the conventions must be explicit and easy to check in review.
-- Some values own resources, such as a PTY or a libghostty-vt handle, that must be released exactly
-  once. Everything else is data and functions over it.
-- Phi ships one compiled binary, so every runtime dependency ships to every user. A version range
-  would let a rebuild pick up new dependency code that nobody reviewed.
+The server runs many panes and clients at once. One failure must never stop the others.
 
-## Options considered
+Data enters from sockets, config files, the state file, and the output of other programs. None of it
+can be trusted until it is parsed.
 
-- Exceptions for every failure. Rejected: callers cannot see from a signature which failures to
-  expect, and a missed catch can stop the server.
-- Typed results for every failure, bugs included. Rejected: impossible states would spread checks
-  through every caller, and a bug would read like an expected outcome.
-- Assertions that run only in development builds. Rejected: a broken state in a release would go on
-  silently and fail later, far from its cause.
-- Add packages freely with version ranges. Rejected: each package adds size and supply-chain risk to
-  the binary, and a range can change shipped code without review.
-- Classes as the main unit of code, with inheritance for shared behavior. Rejected: state and
-  behavior mix, so code is harder to test without real resources, and base classes couple unrelated
-  modules.
-- Typed results for expected failures, exceptions for bugs, always-on invariants, and parsing at
-  every boundary. Chosen: expected failures are part of each signature, and bugs fail where they
-  happen.
+Most code transforms data, but a few hot paths parse and draw terminal output on every keystroke.
+
+Agents write much of the code, so the conventions must be explicit and easy to check in review.
+
+Some values own resources, such as a PTY or a libghostty-vt handle, that must be released exactly
+once. Everything else is data and functions over it.
+
+Phi ships one compiled binary, so every runtime dependency ships to every user. A version range
+would let a rebuild pick up new dependency code that nobody reviewed.
 
 ## Decision
 
 Expected failures return typed results, and bugs throw. Phi parses untrusted data once, at the
-boundary, with zod.
+boundary, with zod. Invariants are always on.
+
+Expected failures are part of each signature, and bugs fail where they happen.
 
 ### Errors
 
@@ -67,8 +57,8 @@ boundary, with zod.
 
 ### Names
 
-- Name files and folders in camelCase. A file named after the React component or class it exports
-  may use PascalCase, such as `StatusBar.tsx`.
+Name files and folders in camelCase. A file named after the React component or class it exports may
+use PascalCase, such as `StatusBar.tsx`.
 
 ### Dependencies
 
@@ -77,14 +67,47 @@ boundary, with zod.
 - Pin every dependency to an exact version. A test refuses other versions in `package.json`, and
   `bunfig.toml` makes `bun add` write exact versions.
 
-## Tradeoffs
+## Consequences
+
+### Positive
 
 - A caller sees each expected failure in the type and must handle it.
 - A bug fails where it happens, in every build, and stops only its pane or client.
 - Code inside the boundary trusts its types and needs no defensive checks.
-- Cost: results add code at every call that can fail.
-- Cost: always-on invariants run in release builds, so they must stay cheap.
-- Cost: zod is a runtime dependency that every boundary relies on.
-- Cost: the list of hot-path modules must be kept up to date, or mutation spreads beyond it.
-- Cost: behavior that would sit on a class lives in module functions, so a reader finds a value's
+
+### Negative
+
+- Results add code at every call that can fail.
+- Always-on invariants run in release builds, so they must stay cheap.
+- Zod is a runtime dependency that every boundary relies on.
+- The list of hot-path modules must be kept up to date, or mutation spreads beyond it.
+- Behavior that would sit on a class lives in module functions, so a reader finds a value's
   operations by its module, not its type.
+
+## Alternatives considered
+
+### Exceptions for every failure
+
+Throw an exception for every failure. Rejected because callers cannot see from a signature which
+failures to expect, and a missed catch can stop the server.
+
+### Typed results for every failure
+
+Return typed results for every failure, bugs included. Rejected because impossible states would
+spread checks through every caller, and a bug would read like an expected outcome.
+
+### Development-only assertions
+
+Assertions that run only in development builds. Rejected because a broken state in a release would
+go on silently and fail later, far from its cause.
+
+### Packages added freely with version ranges
+
+Add packages freely with version ranges. Rejected because each package adds size and supply-chain
+risk to the binary, and a range can change shipped code without review.
+
+### Classes as the main unit of code
+
+Classes as the main unit of code, with inheritance for shared behavior. Rejected because state and
+behavior mix, so code is harder to test without real resources, and base classes couple unrelated
+modules.
