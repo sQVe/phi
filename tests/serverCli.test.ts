@@ -46,10 +46,14 @@ const environmentFor = (directory: string): Record<string, string | undefined> =
   XDG_RUNTIME_DIR: join(directory, 'runtime'),
 });
 
-const runCli = async (commandArguments: string[], directory: string): Promise<CliRun> => {
+const runCli = async (
+  commandArguments: string[],
+  directory: string,
+  environment = environmentFor(directory),
+): Promise<CliRun> => {
   const child = Bun.spawn(['bun', join(root, 'src/index.ts'), ...commandArguments], {
     cwd: directory,
-    env: environmentFor(directory),
+    env: environment,
     stdin: 'ignore',
     stdout: 'pipe',
     stderr: 'pipe',
@@ -157,6 +161,75 @@ it(
     expect(second.stderr).toContain(socketPath);
     expect(serverProcessesIn(directory)).toEqual([first.pid]);
     expect(await helloAnswer(socketPath)).toEqual({ type: 'welcome' });
+  },
+  cliTestTimeoutMs,
+);
+
+it(
+  'reports success to exactly one of several starts on one socket',
+  async () => {
+    const directory = await temporaryDirectory();
+    const socketPath = join(directory, 'run', 'phi.sock');
+    const starts = 6;
+
+    const runs = await Promise.all(
+      Array.from({ length: starts }, () =>
+        runCli(['server', 'start', '--socket', socketPath, '--json'], directory),
+      ),
+    );
+
+    const exitCodes = runs.map((run) => run.exitCode).toSorted((left, right) => left - right);
+    const succeeded = runs.filter((run) => run.exitCode === 0);
+    const pids = succeeded.map((run) => startOutputSchema.parse(JSON.parse(run.stdout)).pid);
+
+    expect(exitCodes).toEqual([0, 1, 1, 1, 1, 1]);
+    expect(pids.every((pid) => isRunning(pid))).toBe(true);
+    expect(serverProcessesIn(directory)).toEqual(pids);
+  },
+  cliTestTimeoutMs,
+);
+
+it.each([
+  ['run', ['server', 'run']],
+  ['start', ['server', 'start']],
+] as const)(
+  'exits 1 with a message and leaves no socket when %s cannot start the shell',
+  async (_name, command) => {
+    const directory = await temporaryDirectory();
+    const socketPath = join(directory, 'run', 'phi.sock');
+    const environment = { ...environmentFor(directory), SHELL: join(directory, 'missing-shell') };
+
+    const run = await runCli(
+      [...command, '--socket', socketPath, '--json'],
+      directory,
+      environment,
+    );
+
+    expect({ exitCode: run.exitCode, stdout: run.stdout }).toEqual({ exitCode: 1, stdout: '' });
+    expect(run.stderr).toContain('missing-shell');
+    expect(existsSync(socketPath)).toBe(false);
+    expect(serverProcessesIn(directory)).toEqual([]);
+  },
+  cliTestTimeoutMs,
+);
+
+it(
+  'exits 1 with a message when start cannot write the log',
+  async () => {
+    const directory = await temporaryDirectory();
+    const socketPath = join(directory, 'run', 'phi.sock');
+    const stateHome = join(directory, 'state');
+    const environment = { ...environmentFor(directory), XDG_STATE_HOME: stateHome };
+
+    await writeFile(stateHome, 'not a directory');
+
+    const run = await runCli(['server', 'start', '--socket', socketPath], directory, environment);
+
+    expect({ exitCode: run.exitCode, stdout: run.stdout }).toEqual({ exitCode: 1, stdout: '' });
+    expect(run.stderr).toContain(join(stateHome, 'phi', 'server.log'));
+    expect(run.stderr).toContain('ENOTDIR');
+    expect(existsSync(socketPath)).toBe(false);
+    expect(serverProcessesIn(directory)).toEqual([]);
   },
   cliTestTimeoutMs,
 );
@@ -309,16 +382,22 @@ it.each(['server', 'server restart', 'server stop now', 'server stop --socket'])
 );
 
 it(
-  'refuses to stop a server from another build and names both versions',
+  'stops a server from another build and removes its socket',
   async () => {
     const directory = await temporaryDirectory();
     const socketPath = join(directory, 'run', 'phi.sock');
     const other = { version: '9.9.9-other', ghostty: 'other-commit' };
 
+    const created = createLog(join(directory, 'state', 'phi', 'server.log'), Date.now);
+
+    if (!created.ok) {
+      throw new Error(created.message);
+    }
+
     const result = await runServer({
       socketPath,
       version: other,
-      log: createLog(join(directory, 'state', 'phi', 'server.log'), Date.now),
+      log: created.log,
       environment: { ...process.env, SHELL: '/bin/sh' },
       directory,
     });
@@ -334,12 +413,11 @@ it(
       await rm(directory, { recursive: true, force: true });
     });
 
-    const stopped = await runCli(['server', 'stop', '--socket', socketPath], directory);
+    const stopped = await runCli(['server', 'stop', '--socket', socketPath, '--json'], directory);
 
-    expect(stopped.exitCode).toBe(1);
-    expect(stopped.stderr).toContain(other.ghostty);
-    expect(stopped.stderr).toContain(buildVersion().ghostty);
-    expect(existsSync(socketPath)).toBe(true);
+    expect(stopped).toEqual({ exitCode: 0, stdout: '{"stopped":true}\n', stderr: '' });
+    await result.server.stopped;
+    expect(existsSync(socketPath)).toBe(false);
   },
   cliTestTimeoutMs,
 );

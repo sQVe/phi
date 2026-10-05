@@ -3,18 +3,13 @@ import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 
+import { z } from 'zod';
+
 import packageJson from '../package.json' with { type: 'json' };
-import { helloServer } from './client/client.ts';
-import type { ServerSession } from './client/client.ts';
+import { sendStop } from './client/client.ts';
 import { invariant } from './invariant.ts';
 import type { BuildVersion } from './protocol/protocol.ts';
-import {
-  claimSocketPath,
-  createLog,
-  logPathFor,
-  runServer,
-  socketPathFor,
-} from './server/server.ts';
+import { createLog, logPathFor, runServer, socketPathFor } from './server/server.ts';
 import { createTerminal, ghosttyCommit } from './vt/vt.ts';
 
 type VersionsResult = { ok: true; versions: BuildVersion } | { ok: false; message: string };
@@ -27,9 +22,10 @@ type Command =
 
 type Outcome = { ok: true } | { ok: false; message: string };
 
-type SessionResult = { ok: true; session: ServerSession } | { ok: false; message: string };
-
 type Environment = Record<string, string | undefined>;
+
+// Why a server that start spawned did not become ready.
+type Unready = { kind: 'exited' } | { kind: 'timedOut' } | { kind: 'badReadiness'; line: string };
 
 // What every server command needs, resolved once from the arguments and the environment.
 interface ServerContext {
@@ -58,14 +54,15 @@ const probeRows = 24;
 
 const probeScrollbackBytes = 0;
 
-const helloTimeoutMs = 2000;
-
 const serverStartTimeoutMs = 10_000;
 
 // Covers the server's wait for pane processes that ignore SIGHUP.
 const serverStopTimeoutMs = 10_000;
 
 const pollIntervalMs = 25;
+
+// What `phi server run --json` prints once it listens, and what start reads as readiness.
+const runningSchema = z.object({ socket: z.string(), pid: z.number().int().positive() });
 
 // Loads the terminal library and parses a query with it, so the versions printed are the ones that
 // work in this binary.
@@ -143,17 +140,6 @@ const print = (json: boolean, value: Record<string, unknown>, text: string): voi
   process.stdout.write(`${output}\n`);
 };
 
-const describeBuild = (build: BuildVersion): string =>
-  `${build.version} (ghostty ${build.ghostty})`;
-
-const refusalMessage = (socketPath: string, client: BuildVersion, server: BuildVersion): string =>
-  [
-    `The server on ${socketPath} is from another build.`,
-    `  this phi: ${describeBuild(client)}`,
-    `  server:   ${describeBuild(server)}`,
-    'Run `phi server stop` and then `phi server start` to restart the server. This ends every pane.',
-  ].join('\n');
-
 const millisecondsPerSecond = 1000;
 
 const resolveSocketPath = (requested: string | undefined, environment: Environment): string => {
@@ -188,27 +174,15 @@ const poll = async <Value>(
   return undefined;
 };
 
-const openSession = async (socketPath: string, version: BuildVersion): Promise<SessionResult> => {
-  const hello = await helloServer(socketPath, version, helloTimeoutMs);
-
-  if (hello.ok) {
-    return hello;
-  }
-
-  if (hello.reason === 'noServer') {
-    return { ok: false, message: `No server runs on ${socketPath}.` };
-  }
-
-  if (hello.reason === 'noAnswer') {
-    return { ok: false, message: `The server on ${socketPath} did not answer.` };
-  }
-
-  return { ok: false, message: refusalMessage(socketPath, hello.client, hello.server) };
-};
-
 const runInForeground = async (context: ServerContext): Promise<Outcome> => {
   const { socketPath, version, environment } = context;
-  const log = createLog(context.logPath, Date.now);
+  const created = createLog(context.logPath, Date.now);
+
+  if (!created.ok) {
+    return created;
+  }
+
+  const { log } = created;
 
   const result = await runServer({
     socketPath,
@@ -239,66 +213,106 @@ const runInForeground = async (context: ServerContext): Promise<Outcome> => {
 const ownCommand = (): string[] =>
   Bun.main.startsWith('/$bunfs/') ? [process.execPath] : [process.execPath, Bun.main];
 
-// Returns undefined while the server starts and does not answer yet.
-const checkStarted = async (
+// Returns the first line, or undefined when the stream ends without one.
+const firstLine = async (stream: ReadableStream<Uint8Array>): Promise<string | undefined> => {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+
+  while (!text.includes('\n')) {
+    // oxlint-disable-next-line eslint/no-await-in-loop -- each read must follow the last one.
+    const chunk = await reader.read();
+
+    if (chunk.done) {
+      return undefined;
+    }
+
+    text += decoder.decode(chunk.value, { stream: true });
+  }
+
+  await reader.cancel();
+
+  return text.slice(0, text.indexOf('\n'));
+};
+
+const parseRunning = (line: string): z.infer<typeof runningSchema> | undefined => {
+  try {
+    const parsed = runningSchema.safeParse(JSON.parse(line));
+
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+// The server prints its readiness line only after it listens on the socket with a running pane,
+// so a line from this child, and not an answer on the socket, proves this child started.
+const waitForReady = async (
+  server: Bun.Subprocess<'ignore', 'pipe', 'pipe'>,
+): Promise<Unready | undefined> => {
+  const timedOut = Promise.withResolvers<Unready>();
+
+  const timer = setTimeout(() => {
+    timedOut.resolve({ kind: 'timedOut' });
+  }, serverStartTimeoutMs);
+
+  const ready = firstLine(server.stdout).then((line): Unready | undefined => {
+    if (line === undefined) {
+      return { kind: 'exited' };
+    }
+
+    const running = parseRunning(line);
+
+    return running?.pid === server.pid ? undefined : { kind: 'badReadiness', line };
+  });
+
+  try {
+    return await Promise.race([ready, timedOut.promise]);
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+const unreadyMessage = async (
   context: ServerContext,
-  server: Bun.Subprocess,
-): Promise<Outcome | undefined> => {
-  const { socketPath, logPath } = context;
-
-  if (server.exitCode !== null) {
-    return {
-      ok: false,
-      message: `The server exited with code ${server.exitCode} before it answered. See ${logPath}.`,
-    };
+  server: Bun.Subprocess<'ignore', 'pipe', 'pipe'>,
+  unready: Unready,
+): Promise<string> => {
+  if (unready.kind === 'timedOut') {
+    return `The server did not become ready within ${seconds(serverStartTimeoutMs)} seconds. See ${context.logPath}.`;
   }
 
-  const hello = await helloServer(socketPath, context.version, helloTimeoutMs);
-
-  if (hello.ok) {
-    hello.session.close();
-
-    return { ok: true };
+  if (unready.kind === 'badReadiness') {
+    return `The server reported readiness that start cannot read: ${unready.line}`;
   }
 
-  if (hello.reason === 'refused') {
-    return { ok: false, message: refusalMessage(socketPath, hello.client, hello.server) };
-  }
+  const [exitCode, detail] = await Promise.all([server.exited, new Response(server.stderr).text()]);
 
-  return undefined;
+  return `The server exited with code ${exitCode} before it was ready:\n${detail.trimEnd()}`;
 };
 
 const startInBackground = async (context: ServerContext): Promise<Outcome> => {
-  const { socketPath, logPath } = context;
-  // Checks the path here, because the server's own errors go only to its log.
-  const claimed = await claimSocketPath(socketPath);
+  const { socketPath } = context;
 
-  if (!claimed.ok) {
-    return claimed;
-  }
-
-  // The server gets its own session, so closing this terminal does not reach it.
-  const server = Bun.spawn([...ownCommand(), 'server', 'run', '--socket', socketPath], {
+  // The server gets its own session, so closing this terminal does not reach it. Its stderr
+  // reaches start only until it is ready.
+  const server = Bun.spawn([...ownCommand(), 'server', 'run', '--socket', socketPath, '--json'], {
     detached: true,
-    stdio: ['ignore', 'ignore', 'ignore'],
+    stdio: ['ignore', 'pipe', 'pipe'],
     env: context.environment,
   });
 
-  const started = await poll(() => checkStarted(context, server), serverStartTimeoutMs);
+  const unready = await waitForReady(server);
 
-  if (started === undefined) {
+  if (unready !== undefined) {
+    const message = await unreadyMessage(context, server, unready);
+
     server.kill('SIGTERM');
 
-    return {
-      ok: false,
-      message: `The server did not answer within ${seconds(serverStartTimeoutMs)} seconds. See ${logPath}.`,
-    };
+    return { ok: false, message };
   }
 
-  if (!started.ok) {
-    return started;
-  }
-
+  await server.stderr.cancel();
   server.unref();
 
   print(
@@ -315,17 +329,15 @@ const socketGone = (socketPath: string): true | undefined =>
 
 const stopServer = async (context: ServerContext): Promise<Outcome> => {
   const { socketPath } = context;
-  const opened = await openSession(socketPath, context.version);
+  const sent = await sendStop(socketPath);
 
-  if (!opened.ok) {
-    return opened;
+  if (!sent.ok) {
+    return { ok: false, message: `No server runs on ${socketPath}.` };
   }
-
-  opened.session.send({ type: 'stop' });
 
   const gone = await poll(() => socketGone(socketPath), serverStopTimeoutMs);
 
-  opened.session.close();
+  sent.close();
 
   if (gone === undefined) {
     return {

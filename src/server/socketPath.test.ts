@@ -1,5 +1,5 @@
 import { expect, it, onTestFinished } from 'bun:test';
-import { lstatSync, statSync } from 'node:fs';
+import { lstatSync, rmSync, statSync } from 'node:fs';
 import {
   chmod,
   chown,
@@ -17,7 +17,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { claimSocketPath, restrictSocket, socketPathFor } from './socketPath.ts';
+import { claimSocketPath, listeningPathFor, publishSocket, socketPathFor } from './socketPath.ts';
 
 const userId = process.getuid?.() ?? -1;
 
@@ -76,7 +76,7 @@ it('creates a missing socket directory with mode 0700', async () => {
 
   const result = await claimSocketPath(join(directory, 'phi.sock'));
 
-  expect(result).toEqual({ ok: true });
+  expect(result).toEqual({ ok: true, path: join(directory, 'phi.sock') });
   expect(await modeOf(directory)).toBe(0o700);
 });
 
@@ -149,7 +149,7 @@ it('removes a stale socket and claims its path', async () => {
 
   const result = await claimSocketPath(path);
 
-  expect(result).toEqual({ ok: true });
+  expect(result).toEqual({ ok: true, path });
   expect(lstatSync(path, { throwIfNoEntry: false })).toBeUndefined();
 });
 
@@ -164,12 +164,158 @@ it('refuses a socket that a server answers on and leaves it in place', async () 
   expect((await lstat(path)).isSocket()).toBe(true);
 });
 
-it('restricts a listening socket to its owner', async () => {
+it('publishes a listening socket at the path for its owner only', async () => {
+  const directory = await temporaryDirectory();
+  const path = join(directory, 'phi.sock');
+  const listeningPath = listeningPathFor(path);
+  listen(listeningPath);
+
+  const result = publishSocket(listeningPath, path);
+
+  expect(result).toEqual({ ok: true });
+  expect(await modeOf(path)).toBe(0o600);
+  expect(lstatSync(listeningPath, { throwIfNoEntry: false })).toBeUndefined();
+});
+
+it('refuses to publish over a socket another server placed and leaves that socket', async () => {
+  const directory = await temporaryDirectory();
+  const path = join(directory, 'phi.sock');
+  const listeningPath = listeningPathFor(path);
+  listen(path);
+  listen(listeningPath);
+  const before = await lstat(path);
+
+  const result = publishSocket(listeningPath, path);
+
+  expect(result).toMatchObject({ ok: false, reason: 'serverRunning' });
+  expect((await lstat(path)).ino).toBe(before.ino);
+  expect(lstatSync(listeningPath, { throwIfNoEntry: false })).toBeUndefined();
+});
+
+it.skipIf(isRoot)('refuses a socket it cannot connect to and leaves it in place', async () => {
   const directory = await temporaryDirectory();
   const path = join(directory, 'phi.sock');
   listen(path);
+  await chmod(path, 0o000);
 
-  restrictSocket(path);
+  const result = await claimSocketPath(path);
 
-  expect(await modeOf(path)).toBe(0o600);
+  expect(result).toMatchObject({ ok: false, reason: 'socketUnreachable' });
+  expect((await lstat(path)).isSocket()).toBe(true);
+});
+
+it.skipIf(!isRoot)('refuses a stale socket that another user owns and leaves it', async () => {
+  const directory = await temporaryDirectory();
+  const path = join(directory, 'phi.sock');
+  const listening = join(directory, 'listening.sock');
+  const listener = listen(listening);
+  await link(listening, path);
+  listener.stop(true);
+  await chown(path, 65_534, 65_534);
+
+  const result = await claimSocketPath(path);
+
+  expect(result).toMatchObject({ ok: false, reason: 'socketOwner' });
+  expect((await lstat(path)).isSocket()).toBe(true);
+});
+
+it('refuses a socket directory under a directory that others can write to', async () => {
+  const shared = join(await temporaryDirectory(), 'shared');
+  const directory = join(shared, 'phi');
+  await mkdir(shared);
+  await chmod(shared, 0o777);
+
+  const result = await claimSocketPath(join(directory, 'phi.sock'));
+
+  expect(result).toMatchObject({ ok: false, reason: 'ancestorMode' });
+  expect(lstatSync(directory, { throwIfNoEntry: false })).toBeUndefined();
+});
+
+it('accepts a socket directory under a sticky directory that others can write to', async () => {
+  const shared = join(await temporaryDirectory(), 'shared');
+  await mkdir(shared);
+  await chmod(shared, 0o1777);
+
+  const result = await claimSocketPath(join(shared, 'phi', 'phi.sock'));
+
+  expect(result).toEqual({ ok: true, path: join(shared, 'phi', 'phi.sock') });
+});
+
+it('accepts a socket directory under a symlink to a safe directory', async () => {
+  const base = await temporaryDirectory();
+  await mkdir(join(base, 'real'), { mode: 0o700 });
+  await symlink(join(base, 'real'), join(base, 'link'));
+
+  const result = await claimSocketPath(join(base, 'link', 'phi', 'phi.sock'));
+
+  expect(result).toEqual({ ok: true, path: join(base, 'real', 'phi', 'phi.sock') });
+  expect(await modeOf(join(base, 'real', 'phi'))).toBe(0o700);
+});
+
+it('refuses a symlink route through a directory that others can write to', async () => {
+  const base = await temporaryDirectory();
+  const shared = join(base, 'shared');
+  await mkdir(join(base, 'real'), { mode: 0o700 });
+  await mkdir(shared);
+  await chmod(shared, 0o777);
+  await symlink(join(base, 'real'), join(shared, 'alias'));
+
+  const result = await claimSocketPath(join(shared, 'alias', 'phi', 'phi.sock'));
+
+  expect(result).toMatchObject({ ok: false, reason: 'ancestorMode' });
+  expect(lstatSync(join(base, 'real', 'phi'), { throwIfNoEntry: false })).toBeUndefined();
+});
+
+it.skipIf(!isRoot)('refuses a socket directory under a directory another user owns', async () => {
+  const foreign = join(await temporaryDirectory(), 'foreign');
+  await mkdir(foreign, { mode: 0o755 });
+  await chown(foreign, 65_534, 65_534);
+
+  const result = await claimSocketPath(join(foreign, 'phi', 'phi.sock'));
+
+  expect(result).toMatchObject({ ok: false, reason: 'ancestorOwner' });
+});
+
+it('leaves a socket that replaced the stale one while the stale one was checked', async () => {
+  const directory = await temporaryDirectory();
+  const path = join(directory, 'phi.sock');
+  const listening = join(directory, 'listening.sock');
+  const stale = listen(listening);
+  await link(listening, path);
+  stale.stop(true);
+
+  const claiming = claimSocketPath(path);
+  // Another server removes the stale socket and places its own before this claim removes anything.
+  rmSync(path);
+  listen(path);
+  const replaced = await lstat(path);
+
+  const result = await claiming;
+
+  expect(result).toMatchObject({ ok: false, reason: 'serverRunning' });
+  expect((await lstat(path)).ino).toBe(replaced.ino);
+});
+
+it('refuses a socket path whose directory above the socket directory is missing', async () => {
+  const base = await temporaryDirectory();
+  const missing = join(base, 'missing');
+
+  const result = await claimSocketPath(join(missing, 'phi', 'phi.sock'));
+
+  expect(result).toMatchObject({ ok: false, reason: 'ancestorMissing' });
+  expect(lstatSync(missing, { throwIfNoEntry: false })).toBeUndefined();
+});
+
+it('refuses a symlink route that passes a missing directory before a shared one', async () => {
+  const base = await temporaryDirectory();
+  const shared = join(base, 'shared');
+  await mkdir(shared);
+  await chmod(shared, 0o777);
+  // A literal target, since join would drop the missing directory.
+  await symlink('missing/../shared', join(base, 'alias'));
+
+  const result = await claimSocketPath(join(base, 'alias', 'phi', 'phi.sock'));
+
+  expect(result).toMatchObject({ ok: false, reason: 'ancestorMissing' });
+  expect(lstatSync(join(shared, 'phi'), { throwIfNoEntry: false })).toBeUndefined();
 });
