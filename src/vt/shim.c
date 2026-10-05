@@ -19,6 +19,8 @@ typedef struct {
   uint64_t restart_first;
   bool reset;
   uint64_t epoch;
+  // While held, state keeps the frame captured when the hold began, see render_hold.
+  bool held;
 } Pane;
 
 // The terminal sends replies during a write and cannot be asked to pause, so the buffer grows
@@ -46,6 +48,14 @@ static void full_reset(GhosttyTerminal terminal, void *userdata) {
   (void)terminal;
   Pane *pane = userdata;
   pane->reset = true;
+}
+
+// The terminal calls this before it processes anything after the program starts a hold, so state
+// captures the last finished frame.
+static void render_hold(GhosttyTerminal terminal, void *userdata, bool held) {
+  Pane *pane = userdata;
+  if (held) ghostty_render_state_update(pane->state, terminal);
+  pane->held = held;
 }
 
 // Answer DA like xterm: VT220 with ANSI color.
@@ -94,6 +104,7 @@ Pane *pane_new(uint16_t cols, uint16_t rows, uint64_t scrollback_bytes) {
   ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY, (const void *)write_pty);
   ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES, (const void *)device_attributes);
   ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_RESET, (const void *)full_reset);
+  ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_RENDER_HOLD, (const void *)render_hold);
   // OSC 10 and 11 queries only get a reply when default colors are set.
   GhosttyColorRgb foreground = {255, 255, 255};
   GhosttyColorRgb background = {0, 0, 0};
@@ -282,7 +293,8 @@ static bool private_mode(Pane *pane, uint16_t value) {
 }
 
 // Bit i is DEC private mode private_modes[i]. Bit 7 is set while the alternate screen is active,
-// whichever of modes 47, 1047, and 1049 switched to it.
+// whichever of modes 47, 1047, and 1049 switched to it. Bit 8 is set while a render hold keeps
+// the captured frame.
 static uint32_t mode_bits(Pane *pane) {
   static const uint16_t private_modes[] = {1, 2004, 9, 1000, 1002, 1003, 1006};
   uint32_t bits = 0;
@@ -292,6 +304,7 @@ static uint32_t mode_bits(Pane *pane) {
   GhosttyTerminalScreen screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY;
   ghostty_terminal_get(pane->terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen);
   if (screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE) bits |= 1u << 7;
+  if (pane->held) bits |= 1u << 8;
   return bits;
 }
 
@@ -311,9 +324,11 @@ static void read_cursor(Pane *pane, uint64_t *x, uint64_t *y, uint64_t *visible)
 // info receives the cell words and grapheme words the frame needs, the cursor x, y, and
 // visibility, and the bits of mode_bits. Returns the number of rows, -1 when a buffer is too
 // small, or -2 when libghostty-vt cannot update. Rows stay dirty unless the whole frame fits.
+// During a render hold the rows and cursor come from the captured frame.
 int32_t pane_frame(Pane *pane, uint32_t *cells, uint64_t cells_len, uint32_t *graphemes, uint64_t graphemes_len,
                    uint64_t *info) {
-  if (ghostty_render_state_update(pane->state, pane->terminal) != GHOSTTY_SUCCESS) return -2;
+  bool updated = pane->held || ghostty_render_state_update(pane->state, pane->terminal) == GHOSTTY_SUCCESS;
+  if (!updated) return -2;
   uint16_t cols = 0;
   ghostty_render_state_get(pane->state, GHOSTTY_RENDER_STATE_DATA_COLS, &cols);
   ghostty_render_state_get(pane->state, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &pane->rows);
@@ -337,6 +352,14 @@ int32_t pane_frame(Pane *pane, uint32_t *cells, uint64_t cells_len, uint32_t *gr
 void pane_mark_all_dirty(Pane *pane) {
   GhosttyRenderStateDirty full = GHOSTTY_RENDER_STATE_DIRTY_FULL;
   ghostty_render_state_set(pane->state, GHOSTTY_RENDER_STATE_OPTION_DIRTY, &full);
+}
+
+// Ends a render hold the program did not end, so the next pane_frame shows the screen as it is.
+// Setting the mode does not call render_hold.
+void pane_end_render_hold(Pane *pane) {
+  GhosttyTerminalModeConfig sync_output = {.mode = GHOSTTY_MODE_SYNC_OUTPUT, .value = false};
+  ghostty_terminal_set(pane->terminal, GHOSTTY_TERMINAL_OPT_MODE, &sync_output);
+  pane->held = false;
 }
 
 // Fills info with the scrollback rows the active screen retains, the byte limit, and the bytes
