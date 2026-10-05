@@ -1,9 +1,17 @@
-import { randomUUID } from 'node:crypto';
-import { chmodSync, linkSync, lstatSync, mkdirSync, readlinkSync, rmSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readlinkSync,
+  rmSync,
+} from 'node:fs';
 import type { Stats } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 
 import { invariant } from '../invariant.ts';
+import { lockExclusive } from './flock.ts';
 
 type DirectoryResult =
   | { ok: true }
@@ -29,24 +37,33 @@ interface Route {
 
 type RouteStep = { kind: 'next'; route: Route } | { kind: 'done'; result: RouteResult };
 
-type ClaimResult =
-  | { ok: true; path: string }
-  | DirectoryFailure
+type LockResult =
+  | { ok: true; release: () => void }
+  | { ok: false; reason: 'serverRunning'; message: string }
+  | { ok: false; reason: 'lockSymlink'; message: string }
+  | { ok: false; reason: 'lockFailed'; message: string };
+
+type LockFailure = Extract<LockResult, { ok: false }>;
+
+type FreeResult =
+  | { ok: true }
   | { ok: false; reason: 'symlink'; message: string }
   | { ok: false; reason: 'notSocket'; message: string }
   | { ok: false; reason: 'socketOwner'; message: string }
   | { ok: false; reason: 'socketUnreachable'; message: string }
-  | { ok: false; reason: 'serverRunning'; message: string };
-
-type PublishResult =
-  | { ok: true }
   | { ok: false; reason: 'serverRunning'; message: string }
-  | { ok: false; reason: 'publishFailed'; message: string };
+  | { ok: false; reason: 'removeFailed'; message: string };
+
+type ClaimResult =
+  | { ok: true; path: string; release: () => void }
+  | DirectoryFailure
+  | LockFailure
+  | Extract<FreeResult, { ok: false }>;
 
 type Probe = { kind: 'answers' } | { kind: 'stale' } | { kind: 'unreachable'; detail: string };
 
-// Group and other read and write bits.
-const sharedModeBits = 0o066;
+// Every group and other bit, since others who can only enter the directory can still connect.
+const sharedModeBits = 0o077;
 
 // Group and other write bits.
 const sharedWriteBits = 0o022;
@@ -55,9 +72,6 @@ const stickyBit = 0o1000;
 
 // Connect errors that prove no server listens on the path.
 const staleErrorCodes = new Set(['ECONNREFUSED', 'ENOENT']);
-
-// Random characters in a listening path, kept short because socket paths have a small length limit.
-const listeningNameLength = 8;
 
 const ownerOnlyMode = 0o600;
 
@@ -292,7 +306,7 @@ const prepareSocketDirectory = (directory: string): DirectoryResult => {
     return {
       ok: false,
       reason: 'directoryMode',
-      message: `Other users can read or write the socket directory ${directory}. Set its mode to 0700.`,
+      message: `Other users can read, write, or enter the socket directory ${directory}. Set its mode to 0700.`,
     };
   }
 
@@ -317,9 +331,6 @@ const probeSocket = async (path: string): Promise<Probe> => {
   }
 };
 
-const isSameFile = (current: Stats | undefined, probed: Stats): boolean =>
-  current?.ino === probed.ino && current.dev === probed.dev;
-
 // The socket path with every symlink above the socket directory resolved, after checking that only
 // trusted users can change the route.
 const resolveSocketPath = (requested: string): RouteResult => {
@@ -334,17 +345,111 @@ const resolveSocketPath = (requested: string): RouteResult => {
   return { ok: true, path: join(route.path, basename(socketDirectory), basename(absolute)) };
 };
 
-const claimResolvedPath = async (path: string): Promise<ClaimResult> => {
-  const directory = prepareSocketDirectory(dirname(path));
+const lockPathFor = (path: string): string => `${path}.lock`;
 
-  if (!directory.ok) {
-    return directory;
+const openLockFile = (lockPath: string): number | LockFailure => {
+  try {
+    return openSync(
+      lockPath,
+      constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW,
+      ownerOnlyMode,
+    );
+  } catch (error) {
+    if (errorCode(error) === 'ELOOP') {
+      return {
+        ok: false,
+        reason: 'lockSymlink',
+        message: `The lock file ${lockPath} is a symlink.`,
+      };
+    }
+
+    return {
+      ok: false,
+      reason: 'lockFailed',
+      message: `Cannot open the lock file ${lockPath}: ${describeError(error)}`,
+    };
+  }
+};
+
+// One server per socket path: the server holds the lock until it stops or its process exits. The
+// lock file stays, since removing it would let two servers lock two different files.
+const lockSocketPath = (path: string): LockResult => {
+  const lockPath = lockPathFor(path);
+  const fileDescriptor = openLockFile(lockPath);
+
+  if (typeof fileDescriptor !== 'number') {
+    return fileDescriptor;
   }
 
-  const existing = lstatSync(path, { throwIfNoEntry: false });
+  let locked: ReturnType<typeof lockExclusive>;
+
+  try {
+    locked = lockExclusive(fileDescriptor);
+  } catch (error) {
+    closeSync(fileDescriptor);
+
+    return {
+      ok: false,
+      reason: 'lockFailed',
+      message: `Cannot lock ${lockPath}: ${describeError(error)}`,
+    };
+  }
+
+  if (locked.kind === 'locked') {
+    const release = (): void => {
+      closeSync(fileDescriptor);
+    };
+
+    return { ok: true, release };
+  }
+
+  closeSync(fileDescriptor);
+
+  if (locked.kind === 'held') {
+    return {
+      ok: false,
+      reason: 'serverRunning',
+      message: `A server already runs or is starting on ${path}.`,
+    };
+  }
+
+  return {
+    ok: false,
+    reason: 'lockFailed',
+    message: `Cannot lock ${lockPath} (errno ${locked.errno}).`,
+  };
+};
+
+// Runs under the lock, so no other server can bind the path while this checks and removes.
+const removeStaleSocket = (path: string): FreeResult => {
+  try {
+    rmSync(path, { force: true });
+
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: 'removeFailed',
+      message: `Cannot remove the stale socket ${path}: ${describeError(error)}`,
+    };
+  }
+};
+
+const freeLockedPath = async (path: string): Promise<FreeResult> => {
+  let existing: Stats | undefined;
+
+  try {
+    existing = lstatSync(path, { throwIfNoEntry: false });
+  } catch (error) {
+    return {
+      ok: false,
+      reason: 'socketUnreachable',
+      message: `Cannot check the socket path ${path}: ${describeError(error)}`,
+    };
+  }
 
   if (existing === undefined) {
-    return { ok: true, path };
+    return { ok: true };
   }
 
   if (existing.isSymbolicLink()) {
@@ -385,19 +490,45 @@ const claimResolvedPath = async (path: string): Promise<ClaimResult> => {
     };
   }
 
-  // Another server may have replaced the stale socket since the probe. Its socket stays.
-  if (!isSameFile(lstatSync(path, { throwIfNoEntry: false }), existing)) {
-    return claimResolvedPath(path);
-  }
-
-  rmSync(path, { force: true });
-
-  return { ok: true, path };
+  return removeStaleSocket(path);
 };
 
-// Leaves the path free for a listener, and returns it with its symlinks resolved. Use that path for
-// everything after, so a later symlink swap cannot redirect the server. Removes only a socket that
-// no server answers on.
+const claimResolvedPath = async (path: string): Promise<ClaimResult> => {
+  const directory = prepareSocketDirectory(dirname(path));
+
+  if (!directory.ok) {
+    return directory;
+  }
+
+  const lock = lockSocketPath(path);
+
+  if (!lock.ok) {
+    return lock;
+  }
+
+  // The lock goes to the caller only with a successful claim. Every other way out releases it.
+  let claimed = false;
+
+  try {
+    const freed = await freeLockedPath(path);
+
+    if (!freed.ok) {
+      return freed;
+    }
+
+    claimed = true;
+
+    return { ok: true, path, release: lock.release };
+  } finally {
+    if (!claimed) {
+      lock.release();
+    }
+  }
+};
+
+// Locks the socket path and leaves it free for a listener. Returns the path with its symlinks
+// resolved: use it for everything after, so a later symlink swap cannot redirect the server. Call
+// release once the server has removed its socket. Removes only a socket that no server answers on.
 export const claimSocketPath = async (requested: string): Promise<ClaimResult> => {
   const resolved = resolveSocketPath(requested);
 
@@ -406,33 +537,4 @@ export const claimSocketPath = async (requested: string): Promise<ClaimResult> =
   }
 
   return claimResolvedPath(resolved.path);
-};
-
-// A private path in the socket directory for the listener to bind before publishSocket.
-export const listeningPathFor = (path: string): string =>
-  join(dirname(path), `.phi-${randomUUID().slice(0, listeningNameLength)}`);
-
-// A listener binds its path before it accepts connections, and a client that connects in between
-// takes the socket for stale. Linking a listening socket into place leaves no such gap, and the
-// link fails when another server took the path first.
-export const publishSocket = (listeningPath: string, path: string): PublishResult => {
-  try {
-    // The listener creates the socket with the process umask.
-    chmodSync(listeningPath, ownerOnlyMode);
-    linkSync(listeningPath, path);
-
-    return { ok: true };
-  } catch (error) {
-    if (errorCode(error) === 'EEXIST') {
-      return { ok: false, reason: 'serverRunning', message: `A server already runs on ${path}.` };
-    }
-
-    return {
-      ok: false,
-      reason: 'publishFailed',
-      message: `Cannot place the socket at ${path}: ${describeError(error)}`,
-    };
-  } finally {
-    rmSync(listeningPath, { force: true });
-  }
 };
