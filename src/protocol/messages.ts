@@ -104,6 +104,7 @@ const controlSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('welcome') }),
   z.object({ type: z.literal('refused'), client: buildVersionSchema, server: buildVersionSchema }),
   z.object({ type: z.literal('detach') }),
+  z.object({ type: z.literal('stop') }),
   z.object({ type: z.literal('resize'), size: sizeSchema }),
   z.object({ type: z.literal('ack'), sequence: count.max(largestSequence) }),
   z.object({ type: z.literal('resync') }),

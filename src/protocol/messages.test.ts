@@ -43,6 +43,7 @@ const messages: ControlMessage[] = [
   { type: 'welcome' },
   { type: 'refused', client: build, server: { version: '1.2.4', ghostty: 'def456' } },
   { type: 'detach' },
+  { type: 'stop' },
   { type: 'resize', size: { columns: 120, rows: 40 } },
   { type: 'ack', sequence: 7 },
   { type: 'resync' },
