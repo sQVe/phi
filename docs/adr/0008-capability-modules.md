@@ -1,33 +1,25 @@
 # ADR 0008: Capability modules with an enforced import table
 
-- Status: Accepted
-- Date: 2026-10-02
+**Date**: 2026-10-02\
+**Status**: Accepted
 
 ## Context
 
-- One binary runs the server, the client, and the CLI. Each part needs code the others must not
-  reach: the server owns PTYs and parsers, and only the client draws.
-- The pure parts, such as the store, the layout, and the row codec, must stay free of I/O so tests
-  run them without processes ([ADR 0006](./0006-server-state-store.md)).
-- Renderer code must stay out of the server, so a UI change cannot stop the panes
-  ([ADR 0003](./0003-session-server-and-client.md)).
-- Written import rules drift unless a check enforces them. Zeta enforces its table in lint.
+One binary runs the server, the client, and the CLI. Each part needs code the others must not reach:
+the server owns PTYs and parsers, and only the client draws.
 
-## Options considered
+The pure parts, such as the store, the layout, and the row codec, must stay free of I/O so tests run
+them without processes ([ADR 0006](./0006-server-state-store.md)).
 
-- Folders by process, such as `server/`, `client/`, and `shared/`. Rejected: `shared/` becomes a
-  place for everything, and it says nothing about which code is pure.
-- Layer folders such as `domain/`, `application/`, and `adapters/`. Rejected: the names say little
-  about who owns a job, and they invite empty scaffolding.
-- Capability modules with import rules written only in `AGENTS.md`. Rejected: the rules would drift
-  without a check.
-- Capability modules with an import table enforced by lint. Chosen: modules name their owner, and
-  lint refuses imports that cross the table.
+Renderer code must stay out of the server, so a UI change cannot stop the panes
+([ADR 0003](./0003-session-server-and-client.md)).
+
+Written import rules drift unless a check enforces them. Zeta enforces its table in lint.
 
 ## Decision
 
 `src/` holds capability modules. A lint rule, `phi/module-boundaries`, enforces which module may
-import which.
+import which. Modules name their owner, and lint refuses imports that cross the table.
 
 ### Modules
 
@@ -71,11 +63,33 @@ that reverses a direction needs a new ADR.
 - Types live in the module that owns them. Do not add a shared `types.ts`, `utils/`, or barrel file.
 - Extract shared code only when two existing consumers need it.
 
-## Tradeoffs
+## Consequences
+
+### Positive
 
 - An agent or reviewer can read ownership from the path, and lint refuses imports that cross it.
 - The server cannot reach renderer code, and the client cannot reach PTYs or parsers.
 - Pure modules stay free of I/O, so tests run them without fakes.
-- Cost: every new module or edge needs a rule change, which adds friction to small additions.
-- Cost: the rule checks import paths only. It does not detect I/O reached through globals such as
+
+### Negative
+
+- Every new module or edge needs a rule change, which adds friction to small additions.
+- The rule checks import paths only. It does not detect I/O reached through globals such as
   `Date.now` or `process`.
+
+## Alternatives considered
+
+### Folders by process
+
+Folders by process, such as `server/`, `client/`, and `shared/`. Rejected because `shared/` becomes
+a place for everything, and it says nothing about which code is pure.
+
+### Layer folders
+
+Layer folders such as `domain/`, `application/`, and `adapters/`. Rejected because the names say
+little about who owns a job, and they invite empty scaffolding.
+
+### Import rules written only in `AGENTS.md`
+
+Capability modules with import rules written only in `AGENTS.md`. Rejected because the rules would
+drift without a check.
