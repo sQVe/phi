@@ -14,7 +14,7 @@ export interface Pane {
   exitCode: number | undefined;
 }
 
-interface Client {
+export interface Client {
   id: ClientId;
   size: TerminalSize;
 }
@@ -42,9 +42,9 @@ export type Fact =
   | { type: 'paneFailedToStart'; paneId: PaneId; generation: number }
   | { type: 'paneExited'; paneId: PaneId; generation: number; exitCode: number };
 
-type DetachReason = 'requested' | 'takenOver';
+export type DetachReason = 'requested' | 'takenOver';
 
-type Change =
+export type Change =
   | { type: 'paneAdded'; pane: Pane }
   | {
       type: 'paneStateChanged';

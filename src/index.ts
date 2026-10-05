@@ -1,14 +1,10 @@
 import { parseArgs } from 'node:util';
 
 import packageJson from '../package.json' with { type: 'json' };
+import type { BuildVersion } from './protocol/protocol.ts';
 import { createTerminal, ghosttyCommit } from './vt/vt.ts';
 
-interface Versions {
-  version: string;
-  ghostty: string;
-}
-
-type VersionsResult = { ok: true; versions: Versions } | { ok: false; message: string };
+type VersionsResult = { ok: true; versions: BuildVersion } | { ok: false; message: string };
 
 const usage = 'Usage: phi --version [--json]';
 
