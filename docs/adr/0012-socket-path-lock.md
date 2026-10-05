@@ -24,7 +24,7 @@
 ## Decision
 
 A server takes an exclusive, non-blocking `flock` on `<socket path>.lock` before it touches the
-socket path, and holds it until it has removed its socket.
+socket path, and holds it until its last shutdown step.
 
 ### Rules
 
@@ -33,6 +33,8 @@ socket path, and holds it until it has removed its socket.
 - A server that cannot take the lock refuses to start, as a running server.
 - Under the lock, the server probes the socket path, removes a stale socket, and binds the path
   itself.
+- The server releases the lock last, even when it could not remove its socket. The next start finds
+  that socket refusing connections and removes it as stale.
 - The lock file stays after the server stops. Removing it would let one server lock the removed file
   and another lock a new file.
 - The `flock` binding is a thin file in the server module, and loads `libc.so.6`.
