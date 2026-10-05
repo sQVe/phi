@@ -22,7 +22,7 @@ const flatModules = new Set(['ids', 'invariant', 'layout', 'index']);
 const allowedImports = new Map<string, Set<string>>([
   ['ids', new Set()],
   ['invariant', new Set()],
-  ['vt', new Set(['invariant'])],
+  ['vt', new Set(['invariant', 'rows'])],
   ['rows', new Set(['ids', 'invariant'])],
   ['layout', new Set(['ids', 'invariant'])],
   ['store', new Set(['ids', 'invariant', 'layout'])],

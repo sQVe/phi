@@ -46,7 +46,7 @@ import which.
 | ----------- | --------------------------------------------------------------- |
 | `ids`       | nothing                                                         |
 | `invariant` | nothing                                                         |
-| `vt`        | `invariant`                                                     |
+| `vt`        | `invariant`, `rows`                                             |
 | `rows`      | `ids`, `invariant`                                              |
 | `layout`    | `ids`, `invariant`                                              |
 | `store`     | `ids`, `invariant`, `layout`                                    |
