@@ -6,9 +6,12 @@
 <!-- Draft only after you can name a choice, the lasting reason for it, and a credible
 alternative. Merging the PR is the approval, so a new ADR is Accepted. Use Superseded or Rejected
 when they apply. When a later ADR replaces this one, keep its reasoning, change the status, and add
-a Superseded by line. Optional lines, each ending with a backslash except the last:
+a Superseded by line. Put optional lines after Status. End every metadata line with a backslash
+except the last, so Markdown keeps the line breaks:
 
-**Superseded by**: [ADR NNNN (Title)](./NNNN-file-name.md)
+**Date**: YYYY-MM-DD\
+**Status**: Superseded\
+**Superseded by**: [ADR NNNN (Title)](./NNNN-file-name.md)\
 **Related**: [ADR NNNN (Title)](./NNNN-file-name.md), [Source](https://example.com) -->
 
 ## Context
