@@ -130,6 +130,16 @@ it.each([
   ['a grapheme index on a color word', encodeRowUpdate(clusterUpdate(2)), 'graphemeOffCell'],
   ['a cluster longer than the payload', encodeRowUpdate(clusterUpdate(1, 3)), 'graphemePastEnd'],
   [
+    'a cluster of no code points',
+    encodeRowUpdate(rowUpdate({ graphemes: Uint32Array.of(1, 0) })),
+    'graphemeTooShort',
+  ],
+  [
+    'a cluster of one code point',
+    encodeRowUpdate(rowUpdate({ graphemes: Uint32Array.of(1, 1, 0x65) })),
+    'graphemeTooShort',
+  ],
+  [
     'a cluster without its length',
     corrupted(rowUpdate(), (words) => Uint32Array.of(...words, 1)),
     'graphemePastEnd',

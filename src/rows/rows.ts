@@ -30,7 +30,8 @@ export type DecodeRowUpdateResult =
   | { ok: false; reason: 'rowCountMismatch' }
   | { ok: false; reason: 'graphemePastEnd' }
   | { ok: false; reason: 'graphemePastCells' }
-  | { ok: false; reason: 'graphemeOffCell' };
+  | { ok: false; reason: 'graphemeOffCell' }
+  | { ok: false; reason: 'graphemeTooShort' };
 
 // Raw bytes for a pane's PTY.
 export interface PaneInput {
@@ -42,7 +43,11 @@ export type DecodePaneInputResult =
   | { ok: true; input: PaneInput }
   | { ok: false; reason: 'wrongLength' };
 
-type GraphemeProblem = 'graphemePastEnd' | 'graphemePastCells' | 'graphemeOffCell';
+type GraphemeProblem =
+  | 'graphemePastEnd'
+  | 'graphemePastCells'
+  | 'graphemeOffCell'
+  | 'graphemeTooShort';
 
 // Words per cell in a row: the base code point, the foreground color, the background color, and
 // the CellFlag and CellWidth bits. A color is 0 for the default color, 1-256 for a palette index
@@ -207,6 +212,10 @@ const graphemeProblem = (
     const cellIndex = graphemes[index] ?? 0;
     const length = graphemes[index + 1] ?? 0;
     const end = index + 2 + length;
+
+    if (length < 2) {
+      return 'graphemeTooShort';
+    }
 
     if (end > graphemes.length) {
       return 'graphemePastEnd';
