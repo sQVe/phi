@@ -25,6 +25,9 @@
     "typecheck": "bunx --bun tsc --noEmit",
     "release:github": "bunx --bun changeset tag"
   },
+  "dependencies": {
+    "zod": "4.6.5"
+  },
   "devDependencies": {
     "@changesets/changelog-github": "1.0.1",
     "@changesets/cli": "3.0.2",
