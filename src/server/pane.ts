@@ -51,11 +51,14 @@ const signalGroup = (group: number, signal: NodeJS.Signals): void => {
 
 // The PTY makes the shell a session leader, so its process id names its session and its own
 // process group. Job control moves the shell's jobs to other groups in the same session.
+// The shell's own group gets the signal first, since it needs no /proc scan, which can fail.
 const signalSession = (session: number, signal: NodeJS.Signals): void => {
-  const groups = new Set([session, ...sessionGroups(session)]);
+  signalGroup(session, signal);
 
-  for (const group of groups) {
-    signalGroup(group, signal);
+  for (const group of sessionGroups(session)) {
+    if (group !== session) {
+      signalGroup(group, signal);
+    }
   }
 };
 
@@ -131,9 +134,13 @@ export const spawnPane = (options: SpawnPaneOptions): SpawnPaneResult => {
     }
 
     disposed = true;
-    signalSession(session, 'SIGKILL');
-    shell.terminal?.close();
-    terminal[Symbol.dispose]();
+
+    try {
+      signalSession(session, 'SIGKILL');
+    } finally {
+      shell.terminal?.close();
+      terminal[Symbol.dispose]();
+    }
   };
 
   const stop = async (): Promise<void> => {

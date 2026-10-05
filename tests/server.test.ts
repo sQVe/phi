@@ -1,6 +1,6 @@
-import { expect, it, onTestFinished } from 'bun:test';
+import { expect, it, onTestFinished, spyOn } from 'bun:test';
 import { once } from 'node:events';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { mkdir, mkdtemp, rename, rm, symlink } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -13,6 +13,7 @@ import { encodeControl, parseControl } from '../src/protocol/messages.ts';
 import type { BuildVersion, ControlMessage } from '../src/protocol/messages.ts';
 import { createLog } from '../src/server/log.ts';
 import type { Log } from '../src/server/log.ts';
+import * as processGroups from '../src/server/processGroups.ts';
 import { runServer } from '../src/server/server.ts';
 import type { Server } from '../src/server/server.ts';
 
@@ -283,6 +284,21 @@ it('removes the socket it bound even when its symlink route changes', async () =
   expect(existsSync(join(real, 'phi', 'phi.sock'))).toBe(false);
 });
 
+it('creates the socket for its owner only, whatever the umask', async () => {
+  const directory = await temporaryDirectory();
+  const previous = process.umask(0);
+
+  onTestFinished(() => {
+    process.umask(previous);
+  });
+
+  const { socketPath } = await startServer(directory);
+
+  process.umask(previous);
+
+  expect(statSync(socketPath).mode & 0o777).toBe(0o600);
+});
+
 it('welcomes a client from the same build and removes the socket when it stops', async () => {
   const directory = await temporaryDirectory();
   const { server, socketPath } = await startServer(directory);
@@ -331,10 +347,11 @@ it('parses what the shell writes to its PTY', async () => {
   const directory = await temporaryDirectory();
   const { server } = await startServer(directory);
 
-  server.writeToPane('echo phi-ready\n');
+  server.writeToPane('echo phi-$((6 * 7))\n');
 
-  // The PTY echoes the command too, so wait for the line the command prints.
-  await waitFor(() => server.paneText()?.split('\n').includes('phi-ready') === true);
+  // The PTY echoes the command, and a shell without line editing prints its prompt before the
+  // output, so look for text only the command's output holds.
+  await waitFor(() => server.paneText()?.includes('phi-42') === true);
 });
 
 it('ends a pane job that ignores SIGHUP within the bounded wait and removes the socket', async () => {
@@ -400,17 +417,19 @@ it('stops when a client sends stop', async () => {
   expect(existsSync(socketPath)).toBe(false);
 });
 
-const hasQueueWarning = (logPath: string): boolean => {
+const logLinesOf = (logPath: string) => {
   if (!existsSync(logPath)) {
-    return false;
+    return [];
   }
 
   return readFileSync(logPath, 'utf8')
     .split('\n')
     .filter((line) => line !== '')
-    .map((line) => logLineSchema.parse(JSON.parse(line)))
-    .some((line) => line.level === 'warn' && line.fields.limitBytes !== undefined);
+    .map((line) => logLineSchema.parse(JSON.parse(line)));
 };
+
+const hasQueueWarning = (logPath: string): boolean =>
+  logLinesOf(logPath).some((line) => line.level === 'warn' && line.fields.limitBytes !== undefined);
 
 it('closes a connection that never reads once its queue is full, and keeps parsing the pane', async () => {
   const directory = await temporaryDirectory();
@@ -446,4 +465,48 @@ it('closes a connection that never reads once its queue is full, and keeps parsi
 
   socket.resume();
   await closed.promise;
+});
+
+it('ends the pane, closes connections, and removes the socket when stopping the pane fails', async () => {
+  const directory = await temporaryDirectory();
+  const { server, socketPath, logPath } = await startServer(directory);
+  const client = await connect(socketPath);
+  // A unique duration, so the test finds only its own sleep.
+  const command = `sleep 1000.${process.pid}${Date.now()}`;
+
+  client.send({ type: 'hello', version: build, size: undefined });
+  await client.nextMessage();
+  server.writeToPane(`exec ${command}\n`);
+  await waitFor(() => processesRunning(command).length > 0);
+
+  const scan = spyOn(processGroups, 'sessionGroups').mockImplementation(() => {
+    throw new Error('No /proc here.');
+  });
+
+  onTestFinished(() => {
+    scan.mockRestore();
+  });
+
+  server.stop();
+  await server.stopped;
+  await client.closed;
+
+  expect(existsSync(socketPath)).toBe(false);
+  expect(logLinesOf(logPath).some((line) => line.fields.error === 'No /proc here.')).toBe(true);
+  await waitFor(() => processesRunning(command).length === 0, 1000);
+});
+
+it('starts a new server on the socket path after the first one stops', async () => {
+  const directory = await temporaryDirectory();
+  const first = await startServer(directory);
+
+  first.server.stop();
+  await first.server.stopped;
+
+  const second = await startServer(directory);
+  const client = await connect(second.socketPath);
+
+  client.send({ type: 'hello', version: build, size: undefined });
+
+  expect(await client.nextMessage()).toEqual({ type: 'welcome' });
 });

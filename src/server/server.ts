@@ -9,7 +9,7 @@ import type { Connection } from './connection.ts';
 import type { Log } from './log.ts';
 import { spawnPane } from './pane.ts';
 import type { PaneRuntime } from './pane.ts';
-import { claimSocketPath, listeningPathFor, publishSocket } from './socketPath.ts';
+import { claimSocketPath } from './socketPath.ts';
 
 export { createLog, logPathFor } from './log.ts';
 export { socketPathFor } from './socketPath.ts';
@@ -34,12 +34,9 @@ export interface Server {
 
 type ClaimFailure = Extract<Awaited<ReturnType<typeof claimSocketPath>>, { ok: false }>;
 
-type PublishFailure = Extract<ReturnType<typeof publishSocket>, { ok: false }>;
-
 type RunServerResult =
   | { ok: true; server: Server }
   | ClaimFailure
-  | PublishFailure
   | { ok: false; reason: 'listenFailed'; message: string }
   | { ok: false; reason: 'paneFailedToStart'; message: string };
 
@@ -62,6 +59,8 @@ interface ServerContext {
   options: ServerOptions;
   // The claimed socket path with its symlinks resolved. The server binds and removes only this.
   socketPath: string;
+  // Releases the socket path's lock. Call it only after the socket is gone.
+  releaseLock: () => void;
   // The store's current state. Only report and dispatch replace it.
   state: State;
   runtime: Runtime;
@@ -125,14 +124,31 @@ const startPane = (context: ServerContext, pane: Pane, report: Report): void => 
   report(context, { type: 'paneStarted', paneId: id, generation });
 };
 
+// A failed stop still ends the pane at once, so the rest of the shutdown can go on.
+const stopPane = async (context: ServerContext, id: PaneId, pane: PaneRuntime): Promise<void> => {
+  const { log } = context.options;
+
+  try {
+    await pane.stop();
+  } catch (error) {
+    log.error('Stopping the pane failed.', { paneId: id, error: describeError(error) });
+
+    try {
+      pane[Symbol.dispose]();
+    } catch (disposeError) {
+      log.error('Ending the pane failed.', { paneId: id, error: describeError(disposeError) });
+    }
+  }
+};
+
 const shutDown = async (context: ServerContext): Promise<void> => {
   const { runtime, options } = context;
-  const panes = [...runtime.panes.values()];
+  const panes = [...runtime.panes.entries()];
 
   options.log.info('Stopping the server.');
 
   try {
-    await Promise.all(panes.map((pane) => pane.stop()));
+    await Promise.all(panes.map(([id, pane]) => stopPane(context, id, pane)));
     runtime.panes.clear();
 
     for (const connection of runtime.connections.values()) {
@@ -142,6 +158,7 @@ const shutDown = async (context: ServerContext): Promise<void> => {
     runtime.connections.clear();
     runtime.listener?.stop(true);
     rmSync(context.socketPath, { force: true });
+    context.releaseLock();
     options.log.info('Stopped the server.');
   } finally {
     context.releaseSignals();
@@ -242,7 +259,13 @@ const closeConnection = (context: ServerContext, id: number): void => {
   context.runtime.connections.delete(id);
 };
 
+// Clears every bit but the owner's read and write, so the socket is 0600 from its bind.
+const ownerOnlyUmask = 0o177;
+
+// Binds with a restrictive umask, so the socket never exists with a wider mode.
 const listen = (context: ServerContext, path: string): Listener | string => {
+  const previousUmask = process.umask(ownerOnlyUmask);
+
   try {
     return Bun.listen<ConnectionData>({
       unix: path,
@@ -263,6 +286,8 @@ const listen = (context: ServerContext, path: string): Listener | string => {
     });
   } catch (error) {
     return describeError(error);
+  } finally {
+    process.umask(previousUmask);
   }
 };
 
@@ -316,11 +341,12 @@ export const runServer = async (options: ServerOptions): Promise<RunServerResult
     return claimed;
   }
 
-  const { path: socketPath } = claimed;
+  const { path: socketPath, release: releaseLock } = claimed;
 
   const context: ServerContext = {
     options,
     socketPath,
+    releaseLock,
     state: createState(),
     runtime: { panes: new Map(), connections: new Map(), listener: undefined, nextConnectionId: 1 },
     stopped: Promise.withResolvers(),
@@ -328,23 +354,16 @@ export const runServer = async (options: ServerOptions): Promise<RunServerResult
     paneStartFailure: undefined,
   };
 
-  const listeningPath = listeningPathFor(socketPath);
-  const listener = listen(context, listeningPath);
+  const listener = listen(context, socketPath);
 
   if (typeof listener === 'string') {
+    releaseLock();
+
     return {
       ok: false,
       reason: 'listenFailed',
       message: `Cannot listen on ${socketPath}: ${listener}`,
     };
-  }
-
-  const published = publishSocket(listeningPath, socketPath);
-
-  if (!published.ok) {
-    listener.stop(true);
-
-    return published;
   }
 
   context.runtime.listener = listener;
