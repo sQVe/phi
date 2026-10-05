@@ -38,10 +38,15 @@ const clientIdSchema: z.ZodType<ClientId> = idNumber('client').transform(clientI
 
 const count = z.number().int().nonnegative();
 
-const sizeSchema = z.object({
-  columns: z.number().int().positive(),
-  rows: z.number().int().positive(),
-});
+// The terminal passes sizes as 16-bit numbers.
+const largestDimension = 0xff_ff;
+
+const dimension = z.number().int().positive().max(largestDimension);
+
+const sizeSchema = z.object({ columns: dimension, rows: dimension });
+
+// A row update carries its sequence as one 32-bit word.
+const largestSequence = 0xff_ff_ff_ff;
 
 const buildVersionSchema: z.ZodType<BuildVersion> = z.object({
   version: z.string(),
@@ -100,7 +105,7 @@ const controlSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('refused'), client: buildVersionSchema, server: buildVersionSchema }),
   z.object({ type: z.literal('detach') }),
   z.object({ type: z.literal('resize'), size: sizeSchema }),
-  z.object({ type: z.literal('ack'), sequence: count }),
+  z.object({ type: z.literal('ack'), sequence: count.max(largestSequence) }),
   z.object({ type: z.literal('resync') }),
   z.object({ type: z.literal('snapshot'), snapshot: snapshotSchema }),
   z.object({ type: z.literal('change'), revision: count, change: changeSchema }),
