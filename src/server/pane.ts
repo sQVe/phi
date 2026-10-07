@@ -1,5 +1,6 @@
 import type { TerminalSize } from '../layout.ts';
 import { createTerminal } from '../vt/vt.ts';
+import type { Terminal } from '../vt/vt.ts';
 import { sessionGroups } from './processGroups.ts';
 
 type Environment = Record<string, string | undefined>;
@@ -9,10 +10,12 @@ interface SpawnPaneOptions {
   size: TerminalSize;
   environment: Environment;
   directory: string;
+  onOutput: () => void;
 }
 
 export interface PaneRuntime {
   generation: number;
+  terminal: Terminal;
   // Resolves with the shell's exit code once it has exited.
   exited: Promise<number>;
   write: (bytes: Uint8Array) => void;
@@ -111,6 +114,7 @@ export const spawnPane = (options: SpawnPaneOptions): SpawnPaneResult => {
     }
 
     terminal.stableRows();
+    options.onOutput();
   };
 
   let shell: ReturnType<typeof spawnShell>;
@@ -152,6 +156,7 @@ export const spawnPane = (options: SpawnPaneOptions): SpawnPaneResult => {
 
   const pane: PaneRuntime = {
     generation: options.generation,
+    terminal,
     exited: shell.exited,
     write: (bytes) => {
       shell.terminal?.write(bytes);

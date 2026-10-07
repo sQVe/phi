@@ -12,15 +12,21 @@ import { paneId } from '../src/ids.ts';
 import { createFrameDecoder, encodeFrame, FrameKind } from '../src/protocol/frames.ts';
 import { encodeControl, parseControl } from '../src/protocol/messages.ts';
 import type { BuildVersion, ControlMessage } from '../src/protocol/messages.ts';
+import { cellWords, decodeRowUpdate } from '../src/rows/rows.ts';
+import type { RowUpdate } from '../src/rows/rows.ts';
 import { createLog } from '../src/server/log.ts';
 import type { Log } from '../src/server/log.ts';
 import * as processGroups from '../src/server/processGroups.ts';
 import { runServer } from '../src/server/server.ts';
 import type { Server } from '../src/server/server.ts';
 import { claimSocketPath } from '../src/server/socketPath.ts';
+import { Terminal } from '../src/vt/vt.ts';
+import type { ReadRowsResult } from '../src/vt/vt.ts';
 
 interface TestClient {
   messages: ControlMessage[];
+  updates: RowUpdate[];
+  nextUpdate: () => Promise<RowUpdate>;
   closed: Promise<void>;
   send: (message: ControlMessage) => void;
   nextMessage: () => Promise<ControlMessage>;
@@ -117,9 +123,44 @@ const startServer = async (
   return { server, socketPath, logPath };
 };
 
+const createReader = <Item>(
+  items: Item[],
+  waiting: (() => void)[],
+  isClosed: () => boolean,
+): (() => Promise<Item>) => {
+  let read = 0;
+
+  return async () => {
+    while (items.length <= read) {
+      if (isClosed()) {
+        throw new Error('The connection closed before an item arrived.');
+      }
+
+      const { promise, resolve } = Promise.withResolvers<undefined>();
+
+      waiting.push(() => {
+        resolve(undefined);
+      });
+
+      await promise;
+    }
+
+    const item = items[read];
+
+    read += 1;
+
+    if (item === undefined) {
+      throw new Error('No item arrived.');
+    }
+
+    return item;
+  };
+};
+
 const connect = async (socketPath: string): Promise<TestClient> => {
   const decoder = createFrameDecoder();
   const messages: ControlMessage[] = [];
+  const updates: RowUpdate[] = [];
   const waiting: (() => void)[] = [];
   const { promise: closed, resolve: markClosed } = Promise.withResolvers<undefined>();
   let isClosed = false;
@@ -135,6 +176,18 @@ const connect = async (socketPath: string): Promise<TestClient> => {
         }
 
         for (const frame of decoded.frames) {
+          if (frame.kind === FrameKind.rowUpdate) {
+            const parsed = decodeRowUpdate(frame.payload);
+
+            if (!parsed.ok) {
+              throw new Error(parsed.reason);
+            }
+
+            updates.push(parsed.update);
+
+            continue;
+          }
+
           const parsed = parseControl(frame.payload);
 
           if (!parsed.ok) {
@@ -163,38 +216,14 @@ const connect = async (socketPath: string): Promise<TestClient> => {
     socket.end();
   });
 
-  let read = 0;
-
-  const nextMessage = async (): Promise<ControlMessage> => {
-    while (messages.length <= read) {
-      if (isClosed) {
-        throw new Error('The connection closed before a message arrived.');
-      }
-
-      const { promise, resolve } = Promise.withResolvers<undefined>();
-
-      waiting.push(() => {
-        resolve(undefined);
-      });
-
-      await promise;
-    }
-
-    const message = messages[read];
-    read += 1;
-
-    if (message === undefined) {
-      throw new Error('No message arrived.');
-    }
-
-    return message;
-  };
+  const nextMessage = createReader(messages, waiting, () => isClosed);
+  const nextUpdate = createReader(updates, waiting, () => isClosed);
 
   const send = (message: ControlMessage): void => {
     socket.write(encodeFrame(FrameKind.control, encodeControl(message)));
   };
 
-  return { messages, closed, send, nextMessage };
+  return { messages, updates, nextUpdate, closed, send, nextMessage };
 };
 
 const serverModule = join(import.meta.dir, '..', 'src', 'server', 'server.ts');
@@ -448,6 +477,118 @@ it('sends no snapshot or changes to a stop-only connection', async () => {
   await client.closed;
 
   expect(client.messages).toEqual([]);
+});
+
+const applyRows = (rows: Map<number, string>, update: RowUpdate): void => {
+  const stride = 1 + update.size.columns * cellWords;
+
+  for (let start = 0; start < update.cells.length; start += stride) {
+    const points: number[] = [];
+
+    for (let column = 0; column < update.size.columns; column += 1) {
+      points.push(update.cells[start + 1 + column * cellWords] ?? 0);
+    }
+
+    const offset = (update.cells[start] ?? 0) | 0;
+
+    const text = String.fromCodePoint(...points)
+      .replaceAll('\0', ' ')
+      .trimEnd();
+
+    rows.set(update.activeTop + offset, text);
+  }
+};
+
+const receiveText = async (
+  client: TestClient,
+  rows: Map<number, string>,
+  text: string,
+): Promise<void> => {
+  while (![...rows.values()].some((row) => row.includes(text))) {
+    const update = await client.nextUpdate();
+
+    applyRows(rows, update);
+  }
+};
+
+it('publishes ordered rows to terminal clients but not CLI clients', async () => {
+  const directory = await temporaryDirectory();
+  const { server, socketPath } = await startServer(directory);
+  const terminal = await connect(socketPath);
+  const cli = await connect(socketPath);
+
+  terminal.send({ type: 'hello', version: build, size: { columns: 100, rows: 30 } });
+  cli.send({ type: 'hello', version: build, size: undefined });
+
+  expect(await terminal.nextMessage()).toEqual({ type: 'welcome' });
+  expect(await cli.nextMessage()).toEqual({ type: 'welcome' });
+  expect(await terminal.nextMessage()).toMatchObject({ type: 'snapshot' });
+  expect(await cli.nextMessage()).toMatchObject({ type: 'snapshot' });
+
+  const first = await terminal.nextUpdate();
+  const rows = new Map<number, string>();
+
+  applyRows(rows, first);
+
+  expect(first.pane).toBe(1);
+  expect(first.size).toEqual({ columns: 80, rows: 24 });
+  expect(first.rowCount).toBe(24);
+
+  server.writeToPane('echo first-$((6 * 7))\n');
+  await receiveText(terminal, rows, 'first-42');
+  server.writeToPane('echo second-$((7 * 7))\n');
+  await receiveText(terminal, rows, 'second-49');
+
+  expect([...rows.values()].some((row) => row.includes('first-42'))).toBe(true);
+  expect(terminal.updates.length).toBeGreaterThan(1);
+
+  for (let index = 1; index < terminal.updates.length; index += 1) {
+    expect(terminal.updates[index]?.sequence).toBeGreaterThan(
+      terminal.updates[index - 1]?.sequence ?? 0,
+    );
+  }
+
+  cli.send({ type: 'resync' });
+  await cli.nextMessage();
+
+  expect(cli.updates).toEqual([]);
+});
+
+it('publishes every changed row when range reads run between pane writes', async () => {
+  const directory = await temporaryDirectory();
+  const { server, socketPath } = await startServer(directory);
+  const client = await connect(socketPath);
+  const rows = new Map<number, string>();
+  const reads: ReadRowsResult[] = [];
+  const originalWrite = Terminal.prototype.write;
+
+  const write = spyOn(Terminal.prototype, 'write').mockImplementation(function (
+    this: Terminal,
+    bytes: Uint8Array,
+  ) {
+    const reply = originalWrite.call(this, bytes);
+    const stable = this.stableRows();
+
+    reads.push(this.readRows(stable.epoch, stable.activeTop, 24));
+
+    return reply;
+  });
+
+  onTestFinished(() => {
+    write.mockRestore();
+  });
+
+  client.send({ type: 'hello', version: build, size: { columns: 80, rows: 24 } });
+  applyRows(rows, await client.nextUpdate());
+
+  server.writeToPane('echo range-$((6 * 7))\n');
+  await receiveText(client, rows, 'range-42');
+  server.writeToPane('echo range-$((7 * 7))\n');
+  await receiveText(client, rows, 'range-49');
+
+  expect(reads.length).toBeGreaterThan(1);
+  expect(reads.every((read) => read.ok)).toBe(true);
+  expect([...rows.values()].some((row) => row.includes('range-42'))).toBe(true);
 });
 
 it('fails and leaves no socket when the shell cannot start', async () => {
