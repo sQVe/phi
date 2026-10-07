@@ -3,7 +3,7 @@ import { rmSync } from 'node:fs';
 import type { PaneId } from '../ids.ts';
 import type { BuildVersion, ControlMessage } from '../protocol/protocol.ts';
 import { applyFact, applyIntent, createState, snapshot } from '../store/store.ts';
-import type { Change, Fact, Intent, Pane, State } from '../store/store.ts';
+import type { Change, Fact, Intent, Pane, Snapshot, State } from '../store/store.ts';
 import { createConnection } from './connection.ts';
 import type { Connection } from './connection.ts';
 import type { Log } from './log.ts';
@@ -34,6 +34,7 @@ export interface Server {
   // For tests: write to the pane's PTY and read the pane's text while the pane runs.
   writeToPane: (text: string) => void;
   paneText: () => string | undefined;
+  snapshot: () => Snapshot;
 }
 
 type ClaimFailure = Extract<Awaited<ReturnType<typeof claimSocketPath>>, { ok: false }>;
@@ -262,6 +263,20 @@ const runEffects = (context: ServerContext, changes: readonly Change[], report: 
   }
 };
 
+const publishChanges = (context: ServerContext, changes: readonly Change[]): void => {
+  let revision = context.state.revision - changes.length;
+
+  for (const change of changes) {
+    revision += 1;
+
+    for (const connection of context.runtime.connections.values()) {
+      if (connection.isWelcomed() && !connection.isClosed()) {
+        connection.send({ type: 'change', revision, change });
+      }
+    }
+  }
+};
+
 const report = (context: ServerContext, fact: Fact): void => {
   const result = applyFact(context.state, fact);
 
@@ -273,6 +288,7 @@ const report = (context: ServerContext, fact: Fact): void => {
     return;
   }
 
+  publishChanges(context, result.changes);
   runEffects(context, result.changes, report);
 };
 
@@ -287,6 +303,7 @@ const dispatch = (context: ServerContext, intent: Intent): void => {
     return;
   }
 
+  publishChanges(context, result.changes);
   runEffects(context, result.changes, report);
 };
 
@@ -323,6 +340,9 @@ const openConnection = (context: ServerContext, socket: Bun.Socket<ConnectionDat
     version: options.version,
     log: options.log,
     queueLimitBytes: connectionQueueLimitBytes,
+    onWelcome: (welcomed) => {
+      welcomed.send({ type: 'snapshot', snapshot: snapshot(context.state) });
+    },
     onMessage: (message, from) => {
       handleMessage(context, message, from);
     },
@@ -408,6 +428,7 @@ const serverOf = (context: ServerContext): Server => ({
     currentPane(context)?.write(new TextEncoder().encode(text));
   },
   paneText: () => currentPane(context)?.text(),
+  snapshot: () => snapshot(context.state),
 });
 
 // Runs a server in this process on the socket path, with one pane. It stops on a stop message,

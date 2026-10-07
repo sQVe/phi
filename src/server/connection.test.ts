@@ -83,6 +83,7 @@ const messagesIn = (bytes: number[]): ControlMessage[] => {
 const open = (
   socket: ReturnType<typeof createSocket>,
   onMessage: (message: ControlMessage, connection: Connection) => void = () => undefined,
+  onWelcome: (connection: Connection) => void = () => undefined,
 ) => {
   const { log, entries } = createRecordingLog();
 
@@ -92,6 +93,7 @@ const open = (
     log,
     queueLimitBytes: 1024,
     onMessage,
+    onWelcome,
   });
 
   return { connection, entries };
@@ -108,6 +110,82 @@ it('welcomes a hello from the same build and passes on later messages', () => {
   expect(messagesIn(socket.written)).toEqual([{ type: 'welcome' }]);
   expect(received).toEqual([{ type: 'stop' }]);
   expect(socket.isEnded()).toBe(false);
+});
+
+const sendSnapshot = (connection: Connection): void => {
+  connection.send({
+    type: 'snapshot',
+    snapshot: { revision: 0, pane: undefined, clients: [], attachedClientId: undefined },
+  });
+};
+
+it('notifies welcome once and queues its snapshot after welcome even across partial writes', () => {
+  const socket = createSocket(4);
+  const welcomed: Connection[] = [];
+
+  const { connection } = open(socket, undefined, (from) => {
+    welcomed.push(from);
+    sendSnapshot(from);
+  });
+
+  connection.receive(frameOf(hello));
+  connection.receive(frameOf(hello));
+  socket.grow(1000);
+  connection.drain();
+
+  expect(welcomed).toEqual([connection]);
+  expect(connection.isWelcomed()).toBe(true);
+
+  expect(messagesIn(socket.written)).toEqual([
+    { type: 'welcome' },
+    {
+      type: 'snapshot',
+      snapshot: { revision: 0, pane: undefined, clients: [], attachedClientId: undefined },
+    },
+  ]);
+});
+
+it.each([{ ...hello, version: { version: 'other', ghostty: 'other' } }, { type: 'stop' } as const])(
+  'does not notify welcome or send a snapshot for $type without a matching hello',
+  (message) => {
+    const socket = createSocket();
+    const welcomed: Connection[] = [];
+
+    const { connection } = open(socket, undefined, (from) => {
+      welcomed.push(from);
+      sendSnapshot(from);
+    });
+
+    connection.receive(frameOf(message));
+
+    expect(welcomed).toEqual([]);
+    expect(connection.isWelcomed()).toBe(false);
+    expect(messagesIn(socket.written).some((answer) => answer.type === 'snapshot')).toBe(false);
+  },
+);
+
+it('does not notify welcome when its response exceeds the write queue limit', () => {
+  const socket = createSocket(0);
+  const { log } = createRecordingLog();
+  const welcomed: Connection[] = [];
+
+  const connection = createConnection({
+    socket,
+    version: build,
+    log,
+    queueLimitBytes: 1,
+    onMessage: () => undefined,
+    onWelcome: (from) => {
+      welcomed.push(from);
+    },
+  });
+
+  connection.receive(frameOf(hello));
+
+  expect(welcomed).toEqual([]);
+  expect(connection.isClosed()).toBe(true);
+  expect(connection.isWelcomed()).toBe(false);
+  expect(socket.written).toEqual([]);
 });
 
 it('accepts a hello split across reads', () => {

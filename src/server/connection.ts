@@ -21,6 +21,7 @@ interface ConnectionOptions {
   version: BuildVersion;
   log: Log;
   queueLimitBytes: number;
+  onWelcome: (connection: Connection) => void;
   // Gets each control message after the handshake, and a stop that comes in place of hello.
   onMessage: (message: ControlMessage, connection: Connection) => void;
 }
@@ -31,6 +32,7 @@ export interface Connection {
   send: (message: ControlMessage) => void;
   close: () => void;
   isClosed: () => boolean;
+  isWelcomed: () => boolean;
 }
 
 const describeError = (error: unknown): string =>
@@ -116,7 +118,12 @@ export const createConnection = (options: ConnectionOptions): Connection => {
     send(answer);
 
     if (answer.type === 'welcome') {
+      if (closed) {
+        return;
+      }
+
       welcomed = true;
+      options.onWelcome(connection);
 
       return;
     }
@@ -181,7 +188,14 @@ export const createConnection = (options: ConnectionOptions): Connection => {
     }
   };
 
-  const connection: Connection = { receive, drain, send, close, isClosed: () => closed };
+  const connection: Connection = {
+    receive,
+    drain,
+    send,
+    close,
+    isClosed: () => closed,
+    isWelcomed: () => welcomed,
+  };
 
   return connection;
 };
