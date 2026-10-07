@@ -1,7 +1,7 @@
 # Phi
 
-Phi is a terminal multiplexer for Linux. It keeps panes, tabs, and workspaces running in a server,
-so you can detach and reattach.
+Phi is a terminal multiplexer for Linux, built around the pi coding agent. It keeps panes, tabs, and
+workspaces running in a server, so you can detach and reattach.
 
 <!-- prettier-ignore -->
 > [!IMPORTANT]
