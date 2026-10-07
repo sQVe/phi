@@ -266,7 +266,7 @@ it('does not report a second stop when a closing pane exits', () => {
   ]);
 });
 
-it('raises the revision by one per transition with changes, and snapshots it', () => {
+it('raises the revision by one per change, and snapshots the last revision', () => {
   const started = intent(createState(), { type: 'startPane' }).state;
   const refused = applyIntent(started, { type: 'startPane' }).state;
   const attached = intent(refused, { type: 'attachClient', size: { columns: 100, rows: 30 } });
@@ -274,10 +274,10 @@ it('raises the revision by one per transition with changes, and snapshots it', (
   expect(started.revision).toBe(1);
   expect(refused.revision).toBe(1);
   expect(attached.changes).toHaveLength(2);
-  expect(attached.state.revision).toBe(2);
+  expect(attached.state.revision).toBe(3);
 
   expect(snapshot(attached.state)).toEqual({
-    revision: 2,
+    revision: 3,
     pane: attached.state.pane,
     attachedClientId: clientId(1),
     clients: attached.state.clients,

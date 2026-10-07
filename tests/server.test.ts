@@ -8,6 +8,7 @@ import { join } from 'node:path';
 
 import { z } from 'zod';
 
+import { paneId } from '../src/ids.ts';
 import { createFrameDecoder, encodeFrame, FrameKind } from '../src/protocol/frames.ts';
 import { encodeControl, parseControl } from '../src/protocol/messages.ts';
 import type { BuildVersion, ControlMessage } from '../src/protocol/messages.ts';
@@ -328,6 +329,127 @@ it('welcomes a client from the same build and removes the socket when it stops',
   expect(existsSync(socketPath)).toBe(false);
 });
 
+it('sends a snapshot after welcome and each later change in revision order', async () => {
+  const directory = await temporaryDirectory();
+  const { server, socketPath } = await startServer(directory);
+  const client = await connect(socketPath);
+
+  client.send({ type: 'hello', version: build, size: undefined });
+
+  expect(await client.nextMessage()).toEqual({ type: 'welcome' });
+
+  const initial = await client.nextMessage();
+
+  expect(initial.type).toBe('snapshot');
+
+  if (initial.type !== 'snapshot') {
+    throw new Error('Expected a snapshot.');
+  }
+
+  expect(initial.snapshot.pane?.id).toBe(paneId(1));
+
+  server.writeToPane('exit\n');
+  await server.stopped;
+  await client.closed;
+
+  expect(client.messages.slice(2)).toEqual([
+    {
+      type: 'change',
+      revision: initial.snapshot.revision + 1,
+      change: { type: 'paneStateChanged', paneId: paneId(1), lifecycle: 'exited', exitCode: 0 },
+    },
+    {
+      type: 'change',
+      revision: initial.snapshot.revision + 2,
+      change: { type: 'serverStopping' },
+    },
+  ]);
+});
+
+it('resyncs after dropping a change inside a multi-change transition', async () => {
+  const directory = await temporaryDirectory();
+  const { server, socketPath } = await startServer(directory);
+  const client = await connect(socketPath);
+
+  server.writeToPane("trap '' HUP; echo ready-$((6 * 7))\n");
+  await waitFor(() => server.paneText()?.includes('ready-42') === true);
+  client.send({ type: 'hello', version: build, size: undefined });
+  await client.nextMessage();
+
+  const initial = await client.nextMessage();
+
+  if (initial.type !== 'snapshot') {
+    throw new Error('Expected a snapshot.');
+  }
+
+  server.stop();
+
+  const dropped = await client.nextMessage();
+  const received = await client.nextMessage();
+
+  expect(dropped).toMatchObject({ type: 'change', change: { type: 'paneStateChanged' } });
+
+  if (received.type !== 'change') {
+    throw new Error('Expected a change.');
+  }
+
+  const hasGap = received.revision > initial.snapshot.revision + 1;
+
+  expect(hasGap).toBe(true);
+
+  if (hasGap) {
+    client.send({ type: 'resync' });
+  }
+
+  const recovered = await client.nextMessage();
+
+  expect(recovered).toEqual({ type: 'snapshot', snapshot: server.snapshot() });
+
+  expect(recovered).toMatchObject({
+    snapshot: { revision: received.revision, pane: { lifecycle: 'closing' } },
+  });
+
+  server.writeToPane('exit\n');
+  await server.stopped;
+});
+
+it('broadcasts changes to every welcomed client but not a connection waiting for hello', async () => {
+  const directory = await temporaryDirectory();
+  const { server, socketPath } = await startServer(directory);
+  const first = await connect(socketPath);
+  const second = await connect(socketPath);
+  const waiting = await connect(socketPath);
+
+  first.send({ type: 'hello', version: build, size: undefined });
+  second.send({ type: 'hello', version: build, size: undefined });
+  await first.nextMessage();
+  await second.nextMessage();
+
+  const initial = await first.nextMessage();
+
+  expect(await second.nextMessage()).toEqual(initial);
+
+  server.writeToPane('exit\n');
+  await server.stopped;
+  await Promise.all([first.closed, second.closed, waiting.closed]);
+
+  expect(first.messages.slice(2)).toHaveLength(2);
+  expect(second.messages).toEqual(first.messages);
+  expect(waiting.messages).toEqual([]);
+});
+
+it('sends no snapshot or changes to a stop-only connection', async () => {
+  const directory = await temporaryDirectory();
+  const { server, socketPath } = await startServer(directory);
+  const client = await connect(socketPath);
+
+  client.send({ type: 'stop' });
+  await server.stopped;
+  await client.closed;
+
+  expect(client.messages).toEqual([]);
+});
+
 it('fails and leaves no socket when the shell cannot start', async () => {
   const directory = await temporaryDirectory();
   const socketPath = join(directory, 'run', 'phi.sock');
@@ -355,6 +477,8 @@ it('refuses a client from another build with both versions and closes the connec
   expect(await client.nextMessage()).toEqual({ type: 'refused', client: other, server: build });
 
   await client.closed;
+
+  expect(client.messages).toEqual([{ type: 'refused', client: other, server: build }]);
 });
 
 it('parses what the shell writes to its PTY', async () => {

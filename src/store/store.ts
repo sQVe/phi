@@ -110,7 +110,7 @@ export const snapshot = (state: State): Snapshot => ({
 });
 
 const commit = (state: State, changes: readonly Change[]): Applied => {
-  const revision = changes.length === 0 ? state.revision : state.revision + 1;
+  const revision = state.revision + changes.length;
 
   return { kind: 'applied', state: { ...state, revision }, changes };
 };
