@@ -21,7 +21,7 @@ interface ConnectionOptions {
   version: BuildVersion;
   log: Log;
   queueLimitBytes: number;
-  onWelcome: (connection: Connection) => void;
+  onWelcome: (connection: Connection, hello: Extract<ControlMessage, { type: 'hello' }>) => void;
   // Gets each control message after the handshake, and a stop that comes in place of hello.
   onMessage: (message: ControlMessage, connection: Connection) => void;
 }
@@ -30,6 +30,7 @@ export interface Connection {
   receive: (bytes: Uint8Array) => void;
   drain: () => void;
   send: (message: ControlMessage) => void;
+  sendBinary: (kind: FrameKind, payload: Uint8Array) => void;
   close: () => void;
   isClosed: () => boolean;
   isWelcomed: () => boolean;
@@ -56,12 +57,12 @@ export const createConnection = (options: ConnectionOptions): Connection => {
     socket.end();
   };
 
-  const send = (message: ControlMessage): void => {
+  const sendBinary = (kind: FrameKind, payload: Uint8Array): void => {
     if (closed) {
       return;
     }
 
-    const sent = queue.send(encodeFrame(FrameKind.control, encodeControl(message)));
+    const sent = queue.send(encodeFrame(kind, payload));
 
     if (!sent.ok) {
       log.warn('Closed a connection whose write queue is full.', {
@@ -70,6 +71,10 @@ export const createConnection = (options: ConnectionOptions): Connection => {
 
       close();
     }
+  };
+
+  const send = (message: ControlMessage): void => {
+    sendBinary(FrameKind.control, encodeControl(message));
   };
 
   const drain = (): void => {
@@ -123,7 +128,7 @@ export const createConnection = (options: ConnectionOptions): Connection => {
       }
 
       welcomed = true;
-      options.onWelcome(connection);
+      options.onWelcome(connection, message);
 
       return;
     }
@@ -192,6 +197,7 @@ export const createConnection = (options: ConnectionOptions): Connection => {
     receive,
     drain,
     send,
+    sendBinary,
     close,
     isClosed: () => closed,
     isWelcomed: () => welcomed,

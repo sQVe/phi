@@ -188,6 +188,68 @@ it('does not notify welcome when its response exceeds the write queue limit', ()
   expect(socket.written).toEqual([]);
 });
 
+it('passes the accepted hello size to the welcome handler', () => {
+  const socket = createSocket();
+  const { log } = createRecordingLog();
+  const received: ControlMessage[] = [];
+
+  const sizedHello: ControlMessage = {
+    ...hello,
+    size: { columns: 100, rows: 30 },
+  };
+
+  const connection = createConnection({
+    socket,
+    version: build,
+    log,
+    queueLimitBytes: 1024,
+    onMessage: () => undefined,
+    onWelcome: (_connection, message) => {
+      received.push(message);
+    },
+  });
+
+  connection.receive(frameOf(sizedHello));
+
+  expect(received).toEqual([sizedHello]);
+});
+
+it('queues binary frames after control frames across partial writes', () => {
+  const socket = createSocket(4);
+  const { connection } = open(socket);
+  const payload = Uint8Array.of(1, 2, 3);
+
+  connection.receive(frameOf(hello));
+  connection.sendBinary(FrameKind.rowUpdate, payload);
+  connection.send({ type: 'takenOver' });
+  socket.grow(1000);
+  connection.drain();
+
+  const decoded = createFrameDecoder().push(Uint8Array.from(socket.written));
+
+  expect(decoded).toEqual({
+    ok: true,
+    frames: [
+      { kind: FrameKind.control, payload: encodeControl({ type: 'welcome' }) },
+      { kind: FrameKind.rowUpdate, payload },
+      { kind: FrameKind.control, payload: encodeControl({ type: 'takenOver' }) },
+    ],
+  });
+});
+
+it('counts binary and control frames against the same queue limit', () => {
+  const socket = createSocket(0);
+  const { connection, entries } = open(socket);
+
+  connection.receive(frameOf(hello));
+  connection.sendBinary(FrameKind.rowUpdate, new Uint8Array(1000));
+
+  expect(connection.isClosed()).toBe(true);
+  expect(socket.isEnded()).toBe(true);
+  expect(socket.written).toEqual([]);
+  expect(entries.map((entry) => entry.level)).toContain('warn');
+});
+
 it('accepts a hello split across reads', () => {
   const socket = createSocket();
   const { connection } = open(socket);
