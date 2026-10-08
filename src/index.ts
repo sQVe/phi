@@ -6,7 +6,8 @@ import { parseArgs } from 'node:util';
 import { z } from 'zod';
 
 import packageJson from '../package.json' with { type: 'json' };
-import { sendStop } from './client/client.ts';
+import { runPaneCommand, sendStop } from './client/client.ts';
+import type { PaneCommand } from './client/client.ts';
 import { invariant } from './invariant.ts';
 import type { BuildVersion } from './protocol/protocol.ts';
 import { createLog, logPathFor, runServer, socketPathFor } from './server/server.ts';
@@ -18,6 +19,7 @@ type ServerAction = 'run' | 'start' | 'stop';
 
 type Command =
   | { kind: 'version'; json: boolean }
+  | ({ kind: 'pane'; json: boolean; socket: string | undefined } & PaneCommand)
   | { kind: 'server'; action: ServerAction; json: boolean; socket: string | undefined };
 
 type Outcome = { ok: true } | { ok: false; message: string };
@@ -43,7 +45,9 @@ const usage = `Usage:
   phi --version [--json]
   phi server run [--socket <path>] [--json]
   phi server start [--socket <path>] [--json]
-  phi server stop [--socket <path>] [--json]`;
+  phi server stop [--socket <path>] [--json]
+  phi pane read [--socket <path>] [--json]
+  phi pane send <text> [--socket <path>] [--json]`;
 
 const serverActions: readonly string[] = ['run', 'start', 'stop'] satisfies ServerAction[];
 
@@ -101,6 +105,18 @@ const readVersions = (): VersionsResult => {
 const isServerAction = (action: string | undefined): action is ServerAction =>
   action !== undefined && serverActions.includes(action);
 
+const parsePaneCommand = (action: string | undefined, rest: string[]): PaneCommand | string => {
+  if (action === 'read' && rest.length === 0) {
+    return { action };
+  }
+
+  if (action === 'send' && rest.length === 1) {
+    return { action, text: rest[0] ?? '' };
+  }
+
+  return 'pane read takes no text; pane send takes one text argument.';
+};
+
 const parseCommand = (): Command | string => {
   try {
     const { values, positionals } = parseArgs({
@@ -121,6 +137,16 @@ const parseCommand = (): Command | string => {
       const hasExtra = positionals.length > 0 || values.socket !== undefined;
 
       return hasExtra ? '--version takes only --json.' : { kind: 'version', json };
+    }
+
+    if (group === 'pane') {
+      const pane = parsePaneCommand(action, rest);
+
+      if (typeof pane === 'string') {
+        return pane;
+      }
+
+      return { kind: 'pane', ...pane, json, socket: values.socket };
     }
 
     if (group !== 'server' || !isServerAction(action)) {
@@ -416,6 +442,54 @@ const runServerAction = (
   return stopServer(context);
 };
 
+const runPaneAction = async (
+  command: Extract<Command, { kind: 'pane' }>,
+  version: BuildVersion,
+  environment: Environment,
+): Promise<Outcome> => {
+  const socketPath = resolveSocketPath(command.socket, environment);
+  const result = await runPaneCommand(socketPath, version, command);
+
+  if (!result.ok) {
+    if (result.reason === 'refused') {
+      const { client, server } = result;
+
+      return {
+        ok: false,
+        message: `CLI ${client.version} (ghostty ${client.ghostty}) cannot connect to server ${server.version} (ghostty ${server.ghostty}). Run phi server stop followed by phi to restart the server. This ends every pane.`,
+      };
+    }
+
+    const messages = {
+      noServer: `No server is listening on ${socketPath}.`,
+      paneMissing: 'The pane is no longer running.',
+      connectionFailed: `The server on ${socketPath} did not complete the pane command.`,
+    };
+
+    return { ok: false, message: messages[result.reason] };
+  }
+
+  if (result.kind === 'rows') {
+    print(command.json, { pane: result.paneId, rows: result.rows }, result.rows.join('\n'));
+  } else if (command.json) {
+    print(true, { sent: true }, '');
+  }
+
+  return { ok: true };
+};
+
+const runAction = (
+  command: Exclude<Command, { kind: 'version' }>,
+  version: BuildVersion,
+  environment: Environment,
+): Promise<Outcome> => {
+  if (command.kind === 'pane') {
+    return runPaneAction(command, version, environment);
+  }
+
+  return runServerAction(command, version, environment);
+};
+
 const main = async (): Promise<number> => {
   const command = parseCommand();
 
@@ -442,7 +516,7 @@ const main = async (): Promise<number> => {
   }
 
   // oxlint-disable-next-line node/no-process-env -- the command line is where the environment enters.
-  const outcome = await runServerAction(command, result.versions, process.env);
+  const outcome = await runAction(command, result.versions, process.env);
 
   if (!outcome.ok) {
     process.stderr.write(`phi: ${outcome.message}\n`);

@@ -300,6 +300,49 @@ const startServerProcess = async (directory: string) => {
   return { child, socketPath };
 };
 
+it.each(['paneRead', 'paneSend'] as const)(
+  'refuses %s for a pane other than the live pane without changing it',
+  async (type) => {
+    const directory = await temporaryDirectory();
+    const { server, socketPath } = await startServer(directory);
+
+    server.writeToPane("printf 'ready-marker\\n'\n");
+    await waitFor(() => server.paneText()?.includes('ready-marker') === true);
+
+    const client = await connect(socketPath);
+
+    client.send({ type: 'hello', version: build, size: undefined });
+    expect(await client.nextMessage()).toEqual({ type: 'welcome' });
+    await client.nextMessage();
+
+    const before = server.snapshot();
+    const missing = paneId(99);
+
+    const message: ControlMessage =
+      type === 'paneRead'
+        ? { type, paneId: missing }
+        : { type, paneId: missing, text: 'must-not-reach-live-pane' };
+
+    client.send(message);
+
+    expect(await client.nextMessage()).toEqual({ type: 'paneMissing', paneId: missing });
+    expect(server.snapshot()).toEqual(before);
+
+    client.send({ type: 'paneRead', paneId: paneId(1) });
+
+    const read = await client.nextMessage();
+
+    expect(read.type).toBe('paneRows');
+
+    if (read.type !== 'paneRows') {
+      throw new Error('Expected the live pane rows.');
+    }
+
+    expect(read.rows.join('\n')).toContain('ready-marker');
+    expect(read.rows.join('\n')).not.toContain('must-not-reach-live-pane');
+  },
+);
+
 it('removes the socket it bound even when its symlink route changes', async () => {
   const directory = await temporaryDirectory();
   const real = join(directory, 'real');

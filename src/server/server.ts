@@ -1,9 +1,10 @@
 import { rmSync } from 'node:fs';
 
 import type { PaneId } from '../ids.ts';
+import { invariant } from '../invariant.ts';
 import { FrameKind } from '../protocol/protocol.ts';
 import type { BuildVersion, ControlMessage } from '../protocol/protocol.ts';
-import { encodeRowUpdate } from '../rows/rows.ts';
+import { encodeRowUpdate, rowsToText } from '../rows/rows.ts';
 import { applyFact, applyIntent, createState, snapshot } from '../store/store.ts';
 import type { Change, Fact, Intent, Pane, Snapshot, State } from '../store/store.ts';
 import { createConnection } from './connection.ts';
@@ -390,6 +391,38 @@ const dispatch = (context: ServerContext, intent: Intent): void => {
   runEffects(context, result.changes, report);
 };
 
+const handlePaneCommand = (
+  context: ServerContext,
+  message: Extract<ControlMessage, { type: 'paneRead' | 'paneSend' }>,
+  connection: Connection,
+): void => {
+  const pane = context.state.pane;
+  const runtime = context.runtime.panes.get(message.paneId);
+  const isLive = pane?.id === message.paneId && pane.lifecycle === 'running';
+
+  if (!isLive || runtime === undefined) {
+    connection.send({ type: 'paneMissing', paneId: message.paneId });
+
+    return;
+  }
+
+  if (message.type === 'paneSend') {
+    runtime.write(new TextEncoder().encode(message.text));
+    connection.send({ type: 'paneSent', paneId: message.paneId });
+
+    return;
+  }
+
+  const { epoch, activeTop } = runtime.terminal.stableRows();
+  const read = runtime.terminal.readRows(epoch, activeTop, pane.size.rows);
+
+  invariant(read.ok, 'The active screen must remain available during a synchronous read.');
+
+  const rows = rowsToText(read.rows, pane.size.columns);
+
+  connection.send({ type: 'paneRows', paneId: message.paneId, rows });
+};
+
 const handleMessage = (
   context: ServerContext,
   message: ControlMessage,
@@ -403,6 +436,12 @@ const handleMessage = (
 
   if (message.type === 'resync') {
     connection.send({ type: 'snapshot', snapshot: snapshot(context.state) });
+
+    return;
+  }
+
+  if (message.type === 'paneRead' || message.type === 'paneSend') {
+    handlePaneCommand(context, message, connection);
 
     return;
   }
