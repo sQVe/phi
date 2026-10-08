@@ -23,6 +23,8 @@ export interface RowUpdate {
   graphemes: Uint32Array;
 }
 
+type TextRows = Pick<RowUpdate, 'rowCount' | 'cells' | 'graphemes'>;
+
 export type DecodeRowUpdateResult =
   | { ok: true; update: RowUpdate }
   | { ok: false; reason: 'wrongLength' }
@@ -134,6 +136,51 @@ const assertRowNumber = (value: number, name: string) => {
 };
 
 const rowWords = (columns: number) => 1 + columns * cellWords;
+
+const cellFlagsOffset = 3;
+
+const clustersOf = (graphemes: Uint32Array): Map<number, string> => {
+  const clusters = new Map<number, string>();
+
+  for (let index = 0; index < graphemes.length;) {
+    const cellIndex = graphemes[index] ?? 0;
+    const length = graphemes[index + 1] ?? 0;
+    const codePoints = graphemes.subarray(index + 2, index + 2 + length);
+
+    clusters.set(cellIndex, String.fromCodePoint(...codePoints));
+    index += 2 + length;
+  }
+
+  return clusters;
+};
+
+export const rowsToText = (range: TextRows, columns: number): string[] => {
+  const clusters = clustersOf(range.graphemes);
+  const rows: string[] = [];
+
+  for (let row = 0; row < range.rowCount; row += 1) {
+    let text = '';
+
+    for (let column = 0; column < columns; column += 1) {
+      const index = row * rowWords(columns) + 1 + column * cellWords;
+      const width: CellWidth = (range.cells[index + cellFlagsOffset] ?? 0) & cellWidthMask;
+
+      if (width === CellWidth.spacerHead || width === CellWidth.spacerTail) {
+        continue;
+      }
+
+      const codePoint = range.cells[index] ?? 0;
+      const character = codePoint === 0 ? ' ' : String.fromCodePoint(codePoint);
+      const cluster = clusters.get(index) ?? character;
+
+      text += cluster;
+    }
+
+    rows.push(text.replace(/ +$/, ''));
+  }
+
+  return rows;
+};
 
 const writeRowNumber = (words: Uint32Array, index: number, value: number) => {
   words[index] = value % lowWordRange;

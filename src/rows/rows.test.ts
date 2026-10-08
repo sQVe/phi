@@ -1,6 +1,7 @@
 import { expect, it } from 'bun:test';
 
 import {
+  CellFlag,
   CellWidth,
   cellWords,
   decodePaneInput,
@@ -8,6 +9,7 @@ import {
   encodePaneInput,
   encodeRowUpdate,
   ModeFlag,
+  rowsToText,
 } from './rows.ts';
 import type { RowUpdate } from './rows.ts';
 
@@ -52,6 +54,23 @@ const rowUpdate = (overrides: Partial<RowUpdate> = {}): RowUpdate => ({
   cells: textRow(0, 'hello'),
   graphemes: new Uint32Array(),
   ...overrides,
+});
+
+it('reads rows as text with clusters and wide spacers, preserving leading and interior spaces', () => {
+  const cells = textRow(0, ' 中 e  x   ');
+
+  cells[1 + cellWords + 3] = CellWidth.wide;
+  cells[1 + 2 * cellWords + 3] = CellWidth.spacerTail;
+  cells[1 + 3 * cellWords + 3] = CellFlag.grapheme;
+  cells[1 + 9 * cellWords + 3] = CellWidth.spacerHead;
+
+  const range = {
+    rowCount: 2,
+    cells: joinRows([cells, textRow(1, '')]),
+    graphemes: Uint32Array.of(1 + 3 * cellWords, 2, 0x65, 0x3_01),
+  };
+
+  expect(rowsToText(range, columns)).toEqual([' 中é  x', '']);
 });
 
 const roundTrip = (update: RowUpdate) => decodeRowUpdate(encodeRowUpdate(update));
