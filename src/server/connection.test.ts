@@ -84,6 +84,7 @@ const open = (
   socket: ReturnType<typeof createSocket>,
   onMessage: (message: ControlMessage, connection: Connection) => void = () => undefined,
   onWelcome: (connection: Connection) => void = () => undefined,
+  onInput: (payload: Uint8Array, connection: Connection) => void = () => undefined,
 ) => {
   const { log, entries } = createRecordingLog();
 
@@ -94,6 +95,7 @@ const open = (
     queueLimitBytes: 1024,
     onMessage,
     onWelcome,
+    onInput,
   });
 
   return { connection, entries };
@@ -110,6 +112,32 @@ it('welcomes a hello from the same build and passes on later messages', () => {
   expect(messagesIn(socket.written)).toEqual([{ type: 'welcome' }]);
   expect(received).toEqual([{ type: 'stop' }]);
   expect(socket.isEnded()).toBe(false);
+});
+
+it('hands an input frame after the handshake to onInput and stays open', () => {
+  const socket = createSocket();
+  const received: Uint8Array[] = [];
+  const payload = Uint8Array.from([1, 0, 0, 0, 104, 105]);
+
+  const { connection } = open(socket, undefined, undefined, (bytes) => received.push(bytes));
+
+  connection.receive(frameOf(hello));
+  connection.receive(encodeFrame(FrameKind.input, payload));
+
+  expect(received).toEqual([payload]);
+  expect(connection.isClosed()).toBe(false);
+});
+
+it('closes a connection whose first frame is input and hands nothing on', () => {
+  const socket = createSocket();
+  const received: Uint8Array[] = [];
+
+  const { connection } = open(socket, undefined, undefined, (bytes) => received.push(bytes));
+
+  connection.receive(encodeFrame(FrameKind.input, Uint8Array.from([1, 0, 0, 0, 104])));
+
+  expect(received).toEqual([]);
+  expect(connection.isClosed()).toBe(true);
 });
 
 const sendSnapshot = (connection: Connection): void => {
@@ -178,6 +206,7 @@ it('does not notify welcome when its response exceeds the write queue limit', ()
     onWelcome: (from) => {
       welcomed.push(from);
     },
+    onInput: () => undefined,
   });
 
   connection.receive(frameOf(hello));
@@ -207,6 +236,7 @@ it('passes the accepted hello size to the welcome handler', () => {
     onWelcome: (_connection, message) => {
       received.push(message);
     },
+    onInput: () => undefined,
   });
 
   connection.receive(frameOf(sizedHello));

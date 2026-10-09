@@ -12,7 +12,7 @@ import { paneId } from '../src/ids.ts';
 import { createFrameDecoder, encodeFrame, FrameKind } from '../src/protocol/frames.ts';
 import { encodeControl, parseControl } from '../src/protocol/messages.ts';
 import type { BuildVersion, ControlMessage } from '../src/protocol/messages.ts';
-import { cellWords, decodeRowUpdate } from '../src/rows/rows.ts';
+import { cellWords, decodeRowUpdate, encodePaneInput } from '../src/rows/rows.ts';
 import type { RowUpdate } from '../src/rows/rows.ts';
 import { createLog } from '../src/server/log.ts';
 import type { Log } from '../src/server/log.ts';
@@ -31,6 +31,8 @@ interface TestClient {
   close: () => void;
   send: (message: ControlMessage) => void;
   sendTogether: (messages: ControlMessage[]) => void;
+  sendInput: (pane: number, bytes: Uint8Array) => void;
+  sendRaw: (kind: FrameKind, payload: Uint8Array) => void;
   nextMessage: () => Promise<ControlMessage>;
 }
 
@@ -232,6 +234,14 @@ const connect = async (socketPath: string): Promise<TestClient> => {
     socket.write(Buffer.concat(frames));
   };
 
+  const sendInput = (pane: number, bytes: Uint8Array): void => {
+    socket.write(encodeFrame(FrameKind.input, encodePaneInput({ pane, bytes })));
+  };
+
+  const sendRaw = (kind: FrameKind, payload: Uint8Array): void => {
+    socket.write(encodeFrame(kind, payload));
+  };
+
   return {
     messages,
     updates,
@@ -242,6 +252,8 @@ const connect = async (socketPath: string): Promise<TestClient> => {
     },
     send,
     sendTogether,
+    sendInput,
+    sendRaw,
     nextMessage,
   };
 };
@@ -888,6 +900,77 @@ it('ignores resize from a connection without a client', async () => {
 
   expect(answer).toMatchObject({ type: 'snapshot' });
   expect(server.snapshot().pane?.size).toEqual({ columns: 80, rows: 24 });
+});
+
+// Frames on one socket are handled in order, so the answer proves the earlier frames ran.
+const afterResync = async (client: TestClient): Promise<void> => {
+  const seen = client.messages.length;
+
+  client.send({ type: 'resync' });
+
+  while (!client.messages.slice(seen).some((message) => message.type === 'snapshot')) {
+    await client.nextMessage();
+  }
+};
+
+it('writes input from the attached client to the pane', async () => {
+  const directory = await temporaryDirectory();
+  const { socketPath } = await startServer(directory);
+  const terminal = await connect(socketPath);
+  const rows = new Map<number, string>();
+
+  terminal.send({ type: 'hello', version: build, size: { columns: 100, rows: 30 } });
+  await nextPaneResize(terminal);
+  terminal.sendInput(1, new TextEncoder().encode('echo phi-input\r'));
+
+  await receiveText(terminal, rows, 'phi-input');
+
+  expect([...rows.values()].some((row) => row.includes('phi-input'))).toBe(true);
+});
+
+it('ignores input from a welcomed connection that is not attached', async () => {
+  const directory = await temporaryDirectory();
+  const { server, socketPath } = await startServer(directory);
+  const cli = await connect(socketPath);
+
+  cli.send({ type: 'hello', version: build, size: undefined });
+  await cli.nextMessage();
+  await cli.nextMessage();
+  cli.sendInput(1, new TextEncoder().encode('echo phi-ignored\r'));
+  await afterResync(cli);
+  server.writeToPane('echo phi-marker\r');
+
+  await waitFor(() => server.paneText()?.includes('phi-marker') === true);
+
+  expect(server.paneText()).not.toContain('phi-ignored');
+});
+
+it('ignores input for a pane other than the current one', async () => {
+  const directory = await temporaryDirectory();
+  const { server, socketPath } = await startServer(directory);
+  const terminal = await connect(socketPath);
+
+  terminal.send({ type: 'hello', version: build, size: { columns: 100, rows: 30 } });
+  await nextPaneResize(terminal);
+  terminal.sendInput(2, new TextEncoder().encode('echo phi-other\r'));
+  await afterResync(terminal);
+  server.writeToPane('echo phi-marker\r');
+
+  await waitFor(() => server.paneText()?.includes('phi-marker') === true);
+
+  expect(server.paneText()).not.toContain('phi-other');
+});
+
+it('closes a connection whose input payload cannot be decoded', async () => {
+  const directory = await temporaryDirectory();
+  const { socketPath } = await startServer(directory);
+  const terminal = await connect(socketPath);
+
+  terminal.send({ type: 'hello', version: build, size: { columns: 100, rows: 30 } });
+  await nextPaneResize(terminal);
+  terminal.sendRaw(FrameKind.input, Uint8Array.from([1, 0]));
+
+  await terminal.closed;
 });
 
 it('publishes every changed row when range reads run between pane writes', async () => {

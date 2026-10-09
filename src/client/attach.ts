@@ -9,7 +9,7 @@ import {
   parseControl,
 } from '../protocol/protocol.ts';
 import type { BuildVersion, ControlMessage } from '../protocol/protocol.ts';
-import { decodeRowUpdate } from '../rows/rows.ts';
+import { decodeRowUpdate, encodePaneInput } from '../rows/rows.ts';
 import { createRowCache } from './rowCache.ts';
 import type { RowCache } from './rowCache.ts';
 import { applyChange } from './snapshot.ts';
@@ -55,6 +55,7 @@ export interface AttachSession {
   setTheme: (theme: TerminalTheme) => void;
   // Tells the server the client has drawn every row update up to this sequence.
   acknowledge: (sequence: number) => void;
+  sendInput: (pane: PaneId, bytes: Uint8Array) => void;
   close: () => void;
   closed: Promise<CloseReason>;
 }
@@ -97,14 +98,17 @@ export const connectAttach = async (
     pending = pending.subarray(Math.max(written, 0));
   };
 
-  const send = (message: ControlMessage): void => {
-    const frame = encodeFrame(FrameKind.control, encodeControl(message));
+  const enqueue = (frame: Uint8Array): void => {
     const queued = new Uint8Array(pending.length + frame.length);
 
     queued.set(pending);
     queued.set(frame, pending.length);
     pending = queued;
     drain();
+  };
+
+  const send = (message: ControlMessage): void => {
+    enqueue(encodeFrame(FrameKind.control, encodeControl(message)));
   };
 
   const end = (reason: CloseReason): void => {
@@ -282,6 +286,11 @@ export const connectAttach = async (
       if (!ended) {
         send({ type: 'ack', sequence });
       }
+    },
+    sendInput: (pane, bytes) => {
+      const number = Number(pane.slice('pane-'.length));
+
+      enqueue(encodeFrame(FrameKind.input, encodePaneInput({ pane: number, bytes })));
     },
     close: () => {
       end('requested');

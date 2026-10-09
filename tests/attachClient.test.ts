@@ -13,7 +13,7 @@ import {
   parseControl,
 } from '../src/protocol/protocol.ts';
 import type { ControlMessage } from '../src/protocol/protocol.ts';
-import { cellWords, encodeRowUpdate } from '../src/rows/rows.ts';
+import { cellWords, decodePaneInput, encodeRowUpdate } from '../src/rows/rows.ts';
 import type { RowUpdate } from '../src/rows/rows.ts';
 import { createLog } from '../src/server/log.ts';
 import { runServer } from '../src/server/server.ts';
@@ -67,6 +67,8 @@ const listen = async (respond: (message: ControlMessage) => Reply) => {
   const directory = await mkdtemp(join(tmpdir(), 'phi-attach-client-'));
   const socketPath = join(directory, 'phi.sock');
   const received: ControlMessage[] = [];
+  const inputs: Uint8Array[] = [];
+  const inputArrived = Promise.withResolvers<undefined>();
   const decoder = createFrameDecoder();
   const sockets: Bun.Socket[] = [];
 
@@ -86,6 +88,13 @@ const listen = async (respond: (message: ControlMessage) => Reply) => {
         }
 
         for (const frame of decoded.frames) {
+          if (frame.kind === FrameKind.input) {
+            inputs.push(frame.payload);
+            inputArrived.resolve(undefined);
+
+            continue;
+          }
+
           const parsed = parseControl(frame.payload);
 
           if (!parsed.ok) {
@@ -117,7 +126,7 @@ const listen = async (respond: (message: ControlMessage) => Reply) => {
     await rm(directory, { recursive: true, force: true });
   });
 
-  return { socketPath, received, sockets };
+  return { socketPath, received, inputs, inputArrived: inputArrived.promise, sockets };
 };
 
 const untilState = async (
@@ -270,6 +279,26 @@ it('sends a resize message', async () => {
     { type: 'hello', version, size },
     { type: 'resize', size: resized },
   ]);
+});
+
+it('sends input bytes for a pane as one input frame', async () => {
+  const bytes = new TextEncoder().encode('echo phi-input\r');
+
+  const server = await listen((message) =>
+    message.type === 'hello' ? [{ type: 'welcome' }, snapshotMessage(1)] : [],
+  );
+
+  const session = await attach(server);
+
+  session.sendInput(paneId(1), bytes);
+
+  await server.inputArrived;
+
+  const [payload] = server.inputs;
+  const decoded = decodePaneInput(payload ?? new Uint8Array());
+
+  expect(server.inputs).toHaveLength(1);
+  expect(decoded).toEqual({ ok: true, input: { pane: 1, bytes } });
 });
 
 it('returns both versions when the server refuses the build', async () => {
