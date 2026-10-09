@@ -65,6 +65,22 @@ it('stores rows at their stable numbers and reports the changed screen rows', ()
   expect(firstWord(cache, -1)).toBe(97);
 });
 
+it('reports every held active row when the active top moves', () => {
+  const cache = createRowCache({ rowLimit: 50 });
+
+  cache.apply(
+    rowUpdate([
+      [0, 'a'],
+      [1, 'b'],
+      [2, 'c'],
+    ]),
+  );
+
+  const changed = cache.apply(rowUpdate([[2, 'd']], { activeTop: 101, sequence: 2 }));
+
+  expect(changed).toEqual([0, 1, 2]);
+});
+
 it('keeps the latest size, cursor, and modes', () => {
   const cache = createRowCache({ rowLimit: 50 });
 
