@@ -45,7 +45,7 @@ Terminal multiplexer with a session server and a terminal client. Read
   typed result for an expected failure and throw only for bugs, and parse untrusted data once with
   zod where it enters.
 - `src/` holds capability modules. Folder modules `vt/`, `rows/`, `store/`, `protocol/`, `server/`,
-  `client/`, and `ui/` each have one public entry file named after the folder, such as
+  `client/`, `ui/`, and `cli/` each have one public entry file named after the folder, such as
   `store/store.ts`. Other files in the folder are private to code in `src/`. Tests and scripts
   outside `src/` may import any module file. Flat modules are `ids.ts`, `invariant.ts`, `layout.ts`,
   and `index.ts`. See [ADR 0008](docs/adr/0008-capability-modules.md).
