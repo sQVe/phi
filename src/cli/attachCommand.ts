@@ -47,7 +47,11 @@ export const runAttachCommand = async (
   try {
     const { runAttach } = await import('../ui/ui.tsx');
 
-    await runAttach(result.session);
+    const reason = await runAttach(result.session);
+
+    if (reason === 'connectionFailed') {
+      return { ok: false, message: `The connection to the server on ${socketPath} failed.` };
+    }
   } finally {
     result.session.close();
   }

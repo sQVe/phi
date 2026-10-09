@@ -1,5 +1,5 @@
 import { expect, it, onTestFinished } from 'bun:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -185,6 +185,95 @@ it.each(['SIGTERM', 'SIGINT', 'SIGHUP'] as const)(
     expect(rows).toContain('still-running');
   },
 );
+
+it('exits with code one and reports a connection failure after the handshake', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'phi-attach-failure-'));
+  const socketPath = join(directory, 'phi.sock');
+  const stderrPath = join(directory, 'stderr');
+  const decoder = createFrameDecoder();
+  let receivedResize = false;
+
+  const listener = Bun.listen({
+    unix: socketPath,
+    socket: {
+      data: (socket, bytes) => {
+        const decoded = decoder.push(bytes);
+
+        if (!decoded.ok) {
+          socket.end();
+
+          return;
+        }
+
+        for (const frame of decoded.frames) {
+          const parsed = parseControl(frame.payload);
+
+          if (!parsed.ok) {
+            socket.end();
+
+            return;
+          }
+
+          if (parsed.message.type === 'hello') {
+            socket.write(encodeFrame(FrameKind.control, encodeControl({ type: 'welcome' })));
+
+            socket.write(
+              encodeFrame(
+                FrameKind.control,
+                encodeControl({
+                  type: 'snapshot',
+                  snapshot: {
+                    revision: 0,
+                    pane: undefined,
+                    attachedClientId: undefined,
+                    clients: [],
+                  },
+                }),
+              ),
+            );
+          }
+
+          if (parsed.message.type === 'resize') {
+            receivedResize = true;
+            socket.write(encodeFrame(FrameKind.control, new TextEncoder().encode('{')));
+          }
+        }
+      },
+    },
+  });
+
+  const client = Bun.spawn(
+    [
+      '/bin/sh',
+      '-c',
+      'exec "$1" src/index.ts attach --socket "$2" 2>"$3"',
+      'phi-attach-test',
+      process.execPath,
+      socketPath,
+      stderrPath,
+    ],
+    {
+      env: { ...process.env, TERM: 'xterm-256color' },
+      terminal: { cols: 80, rows: 24, data: () => undefined },
+    },
+  );
+
+  onTestFinished(async () => {
+    client.kill();
+    await client.exited;
+    client.terminal?.close();
+    listener.stop(true);
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  expect(await client.exited).toBe(1);
+  expect(receivedResize).toBe(true);
+
+  const error = await readFile(stderrPath, 'utf8');
+
+  expect(error).toContain(socketPath);
+  expect(error).toContain('failed');
+});
 
 it('exits with code zero when the server stops', async () => {
   const { client, screen, command } = await setup();
