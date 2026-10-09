@@ -1,3 +1,4 @@
+import { runAttachCommand } from './attachCommand.ts';
 import type { Environment } from './environment.ts';
 import { print } from './output.ts';
 import { runPaneAction } from './paneCommands.ts';
@@ -34,6 +35,18 @@ export const runCli = async (argv: string[], environment: Environment): Promise<
       json: { version, ghostty },
       text: `phi ${version} (ghostty ${ghostty})`,
     });
+
+    return 0;
+  }
+
+  if (command.kind === 'attach') {
+    const outcome = await runAttachCommand(command, result.versions, environment);
+
+    if (!outcome.ok) {
+      writeError(outcome.message);
+
+      return 1;
+    }
 
     return 0;
   }

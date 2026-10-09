@@ -8,6 +8,8 @@ export default defineConfig({
     extends: [lint, react],
     jsPlugins: ['./scripts/lintRules.ts'],
     rules: {
+      // The automatic JSX runtime imports from @opentui/react, not React.createElement.
+      'react/react-in-jsx-scope': 'off',
       'phi/module-boundaries': 'error',
       'phi/throw-only-in-invariant': 'error',
       'phi/class-owns-resource': 'error',
