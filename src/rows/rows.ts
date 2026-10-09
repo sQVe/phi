@@ -222,6 +222,9 @@ const assertRowUpdate = (update: RowUpdate) => {
   );
 };
 
+export const rowUpdateBytes = (update: RowUpdate): number =>
+  (headerWords + update.cells.length + update.graphemes.length) * Uint32Array.BYTES_PER_ELEMENT;
+
 export const encodeRowUpdate = (update: RowUpdate): Uint8Array => {
   assertRowUpdate(update);
 

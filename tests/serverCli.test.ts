@@ -262,7 +262,7 @@ const connectTerminal = async (socketPath: string) => {
   const socket = await Bun.connect({
     unix: socketPath,
     socket: {
-      data: (_socket, bytes) => {
+      data: (connection, bytes) => {
         const decoded = decoder.push(bytes);
 
         if (!decoded.ok) {
@@ -279,7 +279,10 @@ const connectTerminal = async (socketPath: string) => {
           const result = decodeRowUpdate(frame.payload);
 
           if (result.ok) {
+            const ack = encodeControl({ type: 'ack', sequence: result.update.sequence });
+
             updates.push(result.update);
+            connection.write(encodeFrame(FrameKind.control, ack));
           } else {
             failures.push(result.reason);
           }

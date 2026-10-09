@@ -452,7 +452,7 @@ it('sends cursor and mode changes without rows and stops sending after unsubscri
   const terminal = terminalForTest();
   const publisher = publisherForTest(terminal);
   const updates: RowUpdate[] = [];
-  const unsubscribe = publisher.subscribe((update) => updates.push(update));
+  const { unsubscribe } = publisher.subscribe((update) => updates.push(update));
 
   publisher.publish();
   terminal.write(encoder.encode('\u001B[3;4H\u001B[?25l\u001B[?2004h'));
@@ -500,4 +500,53 @@ it('sends the whole screen at the new size to every subscriber after a size chan
     expect(update.rowCount).toBe(10);
     expect(rowsOf(update).get(0)).toBe('hello');
   }
+});
+
+it('pauses a subscriber at the in-flight limit and resumes it on an ack', () => {
+  const terminal = terminalForTest();
+  const requests: string[] = [];
+  using publisher = createRowPublisher(
+    terminal,
+    1,
+    { columns: 80, rows: 24 },
+    {
+      inFlightLimit: 3,
+      requestPublication: () => {
+        requests.push('publish');
+      },
+    },
+  );
+
+  const paused: RowUpdate[] = [];
+  const running: RowUpdate[] = [];
+  const subscription = publisher.subscribe((update) => paused.push(update));
+
+  const acking = publisher.subscribe((update) => {
+    running.push(update);
+    acking.acknowledge(update.sequence);
+  });
+
+  for (let line = 0; line < 8; line += 1) {
+    terminal.write(encoder.encode(`line ${line}\r\n`));
+    terminal.stableRows();
+    publisher.publish();
+  }
+
+  expect(paused).toHaveLength(3);
+  expect(running).toHaveLength(8);
+  expect(requests).toEqual([]);
+  expect(subscription.acknowledge(lastUpdate(paused).sequence + 100)).toBe(false);
+  expect(requests).toEqual([]);
+
+  expect(subscription.acknowledge(lastUpdate(paused).sequence)).toBe(true);
+  expect(subscription.acknowledge(lastUpdate(paused).sequence)).toBe(false);
+  expect(requests).toEqual(['publish']);
+
+  publisher.publish();
+
+  expect(paused).toHaveLength(4);
+
+  const rows = rowsOf(lastUpdate(paused));
+
+  expect([...rows.values()]).toContain('line 7');
 });
