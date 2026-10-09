@@ -1,0 +1,96 @@
+Add terminal data keys for the colors a program set, with or without a change of value.
+
+Phi needs these because it tells clients which colors a program changed with OSC 4, 10, and 11,
+and a client shows its own theme for the rest. A program can set a color to its default value,
+for example OSC 11 to black on a terminal whose background default is black. Comparing a current
+color with its default drops that color. Ghostty already tracks the palette override mask and
+the foreground and background overrides, and these keys expose them.
+
+Upstream: no report filed yet.
+
+--- a/include/ghostty/vt/terminal.h
++++ b/include/ghostty/vt/terminal.h
+@@ -2376,6 +2376,30 @@ typedef enum GHOSTTY_ENUM_TYPED {
+    */
+   GHOSTTY_TERMINAL_DATA_COLOR_PALETTE_DEFAULT = 25,
+ 
++  /**
++   * The palette indexes a program set with OSC 4, even when the color equals
++   * the default. OSC 104 and a full reset clear them.
++   *
++   * Output type: GhosttyColorPaletteMask *
++   */
++  GHOSTTY_TERMINAL_DATA_COLOR_PALETTE_OVERRIDES = 44,
++
++  /**
++   * Whether a program set the foreground with OSC 10, even when the color
++   * equals the default.
++   *
++   * Output type: bool *
++   */
++  GHOSTTY_TERMINAL_DATA_COLOR_FOREGROUND_OVERRIDDEN = 45,
++
++  /**
++   * Whether a program set the background with OSC 11, even when the color
++   * equals the default.
++   *
++   * Output type: bool *
++   */
++  GHOSTTY_TERMINAL_DATA_COLOR_BACKGROUND_OVERRIDDEN = 46,
++
+   /**
+    * The Kitty image storage limit in bytes for the active screen.
+    *
+diff --git a/src/terminal/c/terminal.zig b/src/terminal/c/terminal.zig
+index 2df3098..726664d 100644
+--- a/src/terminal/c/terminal.zig
++++ b/src/terminal/c/terminal.zig
+@@ -29,6 +29,7 @@ const search_c = @import("search.zig");
+ const selection_c = @import("selection.zig");
+ const style_c = @import("style.zig");
+ const color = @import("../color.zig");
++const color_c = @import("color.zig");
+ const clipboard = @import("../clipboard.zig");
+ const kitty_clipboard = @import("../kitty/clipboard.zig");
+ const c_io = @import("io.zig");
+@@ -1692,6 +1693,9 @@ pub const TerminalData = enum(c_int) {
+     color_background_default = 23,
+     color_cursor_default = 24,
+     color_palette_default = 25,
++    color_palette_overrides = 44,
++    color_foreground_overridden = 45,
++    color_background_overridden = 46,
+     kitty_image_storage_limit = 26,
+     kitty_image_medium_file = 27,
+     kitty_image_medium_temp_file = 28,
+@@ -1723,6 +1727,8 @@ pub const TerminalData = enum(c_int) {
+             .vt_processing_error,
+             .vt_ground,
+             .cursor_at_prompt,
++            .color_foreground_overridden,
++            .color_background_overridden,
+             => bool,
+             .mouse_shape => mouse.Shape,
+             .active_screen => TerminalScreen,
+@@ -1747,6 +1753,7 @@ pub const TerminalData = enum(c_int) {
+             .color_cursor_default,
+             => color.RGB.C,
+             .color_palette, .color_palette_default => color.PaletteC,
++            .color_palette_overrides => color_c.PaletteMask,
+             .kitty_image_storage_limit => u64,
+             .kitty_image_medium_file,
+             .kitty_image_medium_shared_mem,
+@@ -1853,6 +1860,13 @@ fn getTyped(
+         .color_cursor_default => out.* = (t.colors.cursor.default orelse return .no_value).cval(),
+         .color_palette => out.* = color.paletteCval(&t.colors.palette.current),
+         .color_palette_default => out.* = color.paletteCval(t.colors.palette.original),
++        .color_palette_overrides => {
++            out.* = .{ .bits = .{ 0, 0, 0, 0 } };
++            var it = t.colors.palette.mask.iterator(.{});
++            while (it.next()) |i| out.bits[i >> 6] |= @as(u64, 1) << @as(u6, @intCast(i & 63));
++        },
++        .color_foreground_overridden => out.* = t.colors.foreground.override != null,
++        .color_background_overridden => out.* = t.colors.background.override != null,
+         .kitty_image_storage_limit => {
+             if (comptime !build_options.kitty_graphics) return .no_value;
+             out.* = @intCast(t.screens.active.kitty_images.total_limit);
