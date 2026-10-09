@@ -18,6 +18,18 @@ Ghostty source to `${XDG_CACHE_HOME:-$HOME/.cache}/phi` and applies the patches 
 it again after you change `src/vt/shim.c`. After you change a patch, delete the cached Ghostty
 directory first.
 
+Run Phi locally with one command:
+
+```sh
+bun run start
+```
+
+`bun run start` builds `build/libphi-vt.so` when it is missing, then runs the server in the
+foreground on `/tmp/phi-dev/phi.sock`. Point other commands at it with
+`--socket /tmp/phi-dev/phi.sock`, for example
+`bun src/index.ts server stop --socket /tmp/phi-dev/phi.sock`. It builds only a missing library, so
+run `bun run build:vt` yourself after a change to `src/vt/shim.c` or a patch.
+
 `bun install` also installs the Git hooks. The pre-commit hook runs the house-style and format
 checks on staged files.
 
