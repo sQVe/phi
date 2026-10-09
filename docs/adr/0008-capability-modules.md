@@ -23,9 +23,9 @@ import which. Modules name their owner, and lint refuses imports that cross the 
 
 ### Modules
 
-- Folder modules: `vt/`, `rows/`, `store/`, `protocol/`, `server/`, `client/`, `ui/`. Each has one
-  public entry file named after the folder, such as `store/store.ts`. Other files in the folder are
-  private to the module.
+- Folder modules: `vt/`, `rows/`, `store/`, `protocol/`, `server/`, `client/`, `ui/`, `cli/`. Each
+  has one public entry file named after the folder, such as `store/store.ts`. Other files in the
+  folder are private to the module.
 - Flat modules: `ids.ts`, `invariant.ts`, `layout.ts`, `index.ts`.
 - The import table and file privacy apply only to files in `src/`. Tests and scripts outside `src/`
   may import any module file.
@@ -34,25 +34,26 @@ import which. Modules name their owner, and lint refuses imports that cross the 
 
 ### Import direction
 
-| Module      | May import                                                      |
-| ----------- | --------------------------------------------------------------- |
-| `ids`       | nothing                                                         |
-| `invariant` | nothing                                                         |
-| `vt`        | `invariant`, `rows`                                             |
-| `rows`      | `ids`, `invariant`                                              |
-| `layout`    | `ids`, `invariant`                                              |
-| `store`     | `ids`, `invariant`, `layout`                                    |
-| `protocol`  | `ids`, `invariant`, `rows`, and types from `store`              |
-| `server`    | `ids`, `invariant`, `vt`, `rows`, `layout`, `store`, `protocol` |
-| `client`    | `ids`, `invariant`, `rows`, `protocol`                          |
-| `ui`        | `ids`, `invariant`, `client`                                    |
-| `index`     | any module. It is the binary's entry, and no module imports it. |
+| Module      | May import                                                                  |
+| ----------- | --------------------------------------------------------------------------- |
+| `ids`       | nothing                                                                     |
+| `invariant` | nothing                                                                     |
+| `vt`        | `invariant`, `rows`                                                         |
+| `rows`      | `ids`, `invariant`                                                          |
+| `layout`    | `ids`, `invariant`                                                          |
+| `store`     | `ids`, `invariant`, `layout`                                                |
+| `protocol`  | `ids`, `invariant`, `rows`, and types from `store`                          |
+| `server`    | `ids`, `invariant`, `vt`, `rows`, `layout`, `store`, `protocol`             |
+| `client`    | `ids`, `invariant`, `rows`, `protocol`                                      |
+| `ui`        | `ids`, `invariant`, `client`                                                |
+| `cli`       | `ids`, `invariant`, `protocol`, `server`, `client`, `vt`                    |
+| `index`     | any module. It is the binary's entry and calls `cli`. No module imports it. |
 
 - `ids`, `invariant`, `rows`, `layout`, and `store` import no Node or Bun built-ins.
 - Only `ui` and `index` import React or OpenTUI packages.
 - Type imports count as dependencies. Dynamic imports must use a literal path.
 - A module may import a file outside `src/` only when the binary embeds it and the rule lists it:
-  `vt` imports `build/libphi-vt.so`, and `index` imports `package.json`.
+  `vt` imports `build/libphi-vt.so`, and `cli` imports `package.json`.
 
 The rule holds the exact table. A change that keeps these directions updates the rule. A new module,
 such as the command catalog or config, joins the table with the ADR that introduces it. A change

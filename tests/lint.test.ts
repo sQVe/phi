@@ -204,7 +204,7 @@ it.each(['lint', 'style:check'])(
         [
           "import { createCliRenderer } from '@opentui/core';",
           "import { useState } from 'react';",
-          "import packageJson from '../package.json' with { type: 'json' };",
+          "import { cli } from './cli/cli.ts';",
           "import { client } from './client/client.ts';",
           "import { ids } from './ids.ts';",
           "import { invariant } from './invariant.ts';",
@@ -215,8 +215,22 @@ it.each(['lint', 'style:check'])(
           "import { store } from './store/store.ts';",
           "import { ui } from './ui/ui.tsx';",
           "import { vt } from './vt/vt.ts';",
-          'export const index = [createCliRenderer, useState, packageJson, client, ids, invariant, layout];',
-          'export const modules = [protocol, rows, server, store, ui, vt];',
+          'export const index = [createCliRenderer, useState, cli, client, ids, invariant, layout];',
+          'export const modules = [protocol, rows, server, store, ui, vt, cli];',
+        ],
+        0,
+      ],
+      [
+        'src/cli/cli.ts',
+        [
+          "import packageJson from '../../package.json' with { type: 'json' };",
+          "import { client } from '../client/client.ts';",
+          "import { ids } from '../ids.ts';",
+          "import { invariant } from '../invariant.ts';",
+          "import { protocol } from '../protocol/protocol.ts';",
+          "import { server } from '../server/server.ts';",
+          "import { vt } from '../vt/vt.ts';",
+          'export const cli = [packageJson, client, ids, invariant, protocol, server, vt];',
         ],
         0,
       ],
@@ -431,6 +445,15 @@ it.each(['lint', 'style:check'])(
         1,
       ],
       [
+        'src/cli/renderer.ts',
+        [
+          "import { useState } from 'react';",
+          "import { createCliRenderer } from '@opentui/core';",
+          'export const renderer = [useState, createCliRenderer];',
+        ],
+        2,
+      ],
+      [
         'src/vt/renderer.ts',
         ["import { useState } from 'react';", 'export const renderer = useState;'],
         1,
@@ -533,6 +556,7 @@ const moduleEntries = {
   server: 'src/server/server.ts',
   client: 'src/client/client.ts',
   ui: 'src/ui/ui.tsx',
+  cli: 'src/cli/cli.ts',
   index: 'src/index.ts',
 };
 
@@ -552,6 +576,7 @@ const allowedEdges: Record<ModuleName, ModuleName[]> = {
   server: ['ids', 'invariant', 'vt', 'rows', 'layout', 'store', 'protocol'],
   client: ['ids', 'invariant', 'rows', 'protocol'],
   ui: ['ids', 'invariant', 'client'],
+  cli: ['ids', 'invariant', 'protocol', 'server', 'client', 'vt'],
   index: [
     'ids',
     'invariant',
@@ -563,6 +588,7 @@ const allowedEdges: Record<ModuleName, ModuleName[]> = {
     'server',
     'client',
     'ui',
+    'cli',
   ],
 };
 

@@ -754,6 +754,19 @@ it.each([
   cliTestTimeoutMs,
 );
 
+it.each([['pane'], ['pane restart']])(
+  'names an unknown pane command and prints the usage: %s',
+  async (commandLine) => {
+    const directory = await temporaryDirectory();
+
+    const run = await runCli(commandLine.split(' '), directory);
+
+    expect({ exitCode: run.exitCode, stdout: run.stdout }).toEqual({ exitCode: 2, stdout: '' });
+    expect(run.stderr).toStartWith('phi: Unknown pane command.\nUsage:\n');
+  },
+  cliTestTimeoutMs,
+);
+
 it(
   'refuses pane commands from another build, then stops that server and removes its socket',
   async () => {
