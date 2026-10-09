@@ -171,6 +171,7 @@ const loadLibrary = () =>
       returns: FFIType.i64,
     },
     pane_mark_all_dirty: { args: [FFIType.ptr], returns: FFIType.void },
+    pane_render_held: { args: [FFIType.ptr], returns: FFIType.bool },
     pane_end_render_hold: { args: [FFIType.ptr], returns: FFIType.void },
     pane_stable_rows: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.bool },
     pane_scrollback: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.void },
@@ -304,6 +305,11 @@ export class Terminal {
   // The next frame returns every row.
   markAllDirty(): void {
     this.symbols.pane_mark_all_dirty(this.live());
+  }
+
+  // Whether synchronized output holds the frame. Does not consume dirty rows.
+  renderHeld(): boolean {
+    return this.symbols.pane_render_held(this.live());
   }
 
   // Turns off synchronized output, so the next frame shows the screen as it is.

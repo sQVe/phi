@@ -7,6 +7,7 @@ import type { Frame, RowRange, StableRows, Terminal } from '../vt/vt.ts';
 export interface RowPublisher {
   subscribe: (send: (update: RowUpdate) => void) => () => void;
   publish: () => void;
+  whenReleased: () => Promise<void>;
   [Symbol.dispose]: () => void;
 }
 
@@ -211,11 +212,22 @@ export const createRowPublisher = (
   let holdTimer: ReturnType<typeof setTimeout> | undefined;
   let holdExpired = false;
   let disposed = false;
+  let waiters: (() => void)[] = [];
 
   const clearHold = (): void => {
     clearTimeout(holdTimer);
     holdTimer = undefined;
     holdExpired = false;
+  };
+
+  const releaseWaiters = (): void => {
+    const released = waiters;
+
+    waiters = [];
+
+    for (const resolve of released) {
+      resolve();
+    }
   };
 
   const watchHold = (): void => {
@@ -240,6 +252,20 @@ export const createRowPublisher = (
     };
   };
 
+  const whenReleased = async (): Promise<void> => {
+    if (disposed || !terminal.renderHeld()) {
+      return;
+    }
+
+    const released = new Promise<void>((resolve) => {
+      waiters.push(resolve);
+    });
+
+    watchHold();
+
+    await released;
+  };
+
   const publish = (): void => {
     if (disposed) {
       return;
@@ -248,6 +274,7 @@ export const createRowPublisher = (
     if (holdExpired) {
       terminal.endRenderHold();
       clearHold();
+      releaseWaiters();
     }
 
     const stable = terminal.stableRows();
@@ -275,6 +302,7 @@ export const createRowPublisher = (
     }
 
     clearHold();
+    releaseWaiters();
 
     if (subscribers.size === 0) {
       return;
@@ -297,8 +325,9 @@ export const createRowPublisher = (
   const dispose = (): void => {
     disposed = true;
     clearHold();
+    releaseWaiters();
     subscribers.clear();
   };
 
-  return { subscribe, publish, [Symbol.dispose]: dispose };
+  return { subscribe, publish, whenReleased, [Symbol.dispose]: dispose };
 };

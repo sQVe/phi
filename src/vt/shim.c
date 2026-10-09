@@ -362,6 +362,9 @@ void pane_end_render_hold(Pane *pane) {
   pane->held = false;
 }
 
+// Whether a render hold is active. Current right after each pane_write.
+bool pane_render_held(Pane *pane) { return pane->held; }
+
 // Fills info with the scrollback rows the active screen retains, the byte limit, and the bytes
 // of memory the primary screen's pages use.
 void pane_scrollback(Pane *pane, uint64_t *info) {

@@ -26,6 +26,8 @@ interface ServerOptions {
   // The environment and directory the server started in. The pane's shell starts with both.
   environment: Record<string, string | undefined>;
   directory: string;
+  // For tests: ends a render hold after this many milliseconds. Defaults to the publisher's limit.
+  holdLimitMs?: number;
 }
 
 // A failed step does not stop the steps after it, and the lock is always released.
@@ -192,6 +194,9 @@ const startPane = (context: ServerContext, pane: Pane, report: Report): void => 
   const number = Number(id.slice('pane-'.length));
 
   const publisher = createRowPublisher(spawned.pane.terminal, number, pane.size, {
+    ...(context.options.holdLimitMs === undefined
+      ? {}
+      : { holdLimitMs: context.options.holdLimitMs }),
     requestPublication: () => {
       scheduleRows(context, id, generation);
     },
@@ -391,36 +396,88 @@ const dispatch = (context: ServerContext, intent: Intent): void => {
   runEffects(context, result.changes, report);
 };
 
+const findLivePane = (context: ServerContext, paneId: PaneId) => {
+  const pane = context.state.pane;
+  const runtime = context.runtime.panes.get(paneId);
+  const isLive = pane?.id === paneId && pane.lifecycle === 'running';
+
+  if (!isLive || runtime === undefined) {
+    return undefined;
+  }
+
+  return { pane, runtime };
+};
+
+const answerPaneRead = (context: ServerContext, paneId: PaneId, connection: Connection): void => {
+  const live = findLivePane(context, paneId);
+
+  if (connection.isClosed()) {
+    return;
+  }
+
+  if (live === undefined) {
+    connection.send({ type: 'paneMissing', paneId });
+
+    return;
+  }
+
+  const { epoch, activeTop } = live.runtime.terminal.stableRows();
+  const read = live.runtime.terminal.readRows(epoch, activeTop, live.pane.size.rows);
+
+  invariant(read.ok, 'The active screen must remain available during a synchronous read.');
+
+  const rows = rowsToText(read.rows, live.pane.size.columns);
+
+  connection.send({ type: 'paneRows', paneId, rows });
+};
+
+const answerPaneReadAfterHold = async (
+  context: ServerContext,
+  paneId: PaneId,
+  connection: Connection,
+  publisher: RowPublisher,
+): Promise<void> => {
+  await publisher.whenReleased();
+
+  answerPaneRead(context, paneId, connection);
+};
+
 const handlePaneCommand = (
   context: ServerContext,
   message: Extract<ControlMessage, { type: 'paneRead' | 'paneSend' }>,
   connection: Connection,
 ): void => {
-  const pane = context.state.pane;
-  const runtime = context.runtime.panes.get(message.paneId);
-  const isLive = pane?.id === message.paneId && pane.lifecycle === 'running';
+  const live = findLivePane(context, message.paneId);
 
-  if (!isLive || runtime === undefined) {
+  if (live === undefined) {
     connection.send({ type: 'paneMissing', paneId: message.paneId });
 
     return;
   }
 
   if (message.type === 'paneSend') {
-    runtime.write(new TextEncoder().encode(message.text));
+    live.runtime.write(new TextEncoder().encode(message.text));
     connection.send({ type: 'paneSent', paneId: message.paneId });
 
     return;
   }
 
-  const { epoch, activeTop } = runtime.terminal.stableRows();
-  const read = runtime.terminal.readRows(epoch, activeTop, pane.size.rows);
+  const publication = context.runtime.rowPublishers.get(message.paneId);
 
-  invariant(read.ok, 'The active screen must remain available during a synchronous read.');
+  if (publication === undefined || !live.runtime.terminal.renderHeld()) {
+    answerPaneRead(context, message.paneId, connection);
 
-  const rows = rowsToText(read.rows, pane.size.columns);
+    return;
+  }
 
-  connection.send({ type: 'paneRows', paneId: message.paneId, rows });
+  answerPaneReadAfterHold(context, message.paneId, connection, publication.publisher).catch(
+    (error: unknown) => {
+      context.options.log.error('Reading the pane failed.', {
+        paneId: message.paneId,
+        error: describeError(error),
+      });
+    },
+  );
 };
 
 const handleMessage = (

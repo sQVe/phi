@@ -29,6 +29,7 @@ interface TestClient {
   nextUpdate: () => Promise<RowUpdate>;
   closed: Promise<void>;
   send: (message: ControlMessage) => void;
+  sendTogether: (messages: ControlMessage[]) => void;
   nextMessage: () => Promise<ControlMessage>;
 }
 
@@ -105,6 +106,7 @@ const startServer = async (
     log,
     environment: { ...process.env, SHELL: shell },
     directory,
+    holdLimitMs: 60_000,
   });
 
   if (!result.ok) {
@@ -223,7 +225,13 @@ const connect = async (socketPath: string): Promise<TestClient> => {
     socket.write(encodeFrame(FrameKind.control, encodeControl(message)));
   };
 
-  return { messages, updates, nextUpdate, closed, send, nextMessage };
+  const sendTogether = (batch: ControlMessage[]): void => {
+    const frames = batch.map((message) => encodeFrame(FrameKind.control, encodeControl(message)));
+
+    socket.write(Buffer.concat(frames));
+  };
+
+  return { messages, updates, nextUpdate, closed, send, sendTogether, nextMessage };
 };
 
 const serverModule = join(import.meta.dir, '..', 'src', 'server', 'server.ts');
@@ -340,6 +348,74 @@ it.each(['paneRead', 'paneSend'] as const)(
 
     expect(read.rows.join('\n')).toContain('ready-marker');
     expect(read.rows.join('\n')).not.toContain('must-not-reach-live-pane');
+  },
+);
+
+it('answers paneRead during a synchronized-output hold only after the hold ends', async () => {
+  const directory = await temporaryDirectory();
+  const { server, socketPath } = await startServer(directory);
+  const client = await connect(socketPath);
+
+  client.send({ type: 'hello', version: build, size: undefined });
+  expect(await client.nextMessage()).toEqual({ type: 'welcome' });
+  await client.nextMessage();
+
+  server.writeToPane('printf \'\\033[?2026hhalf-\'"drawn"\n');
+  await waitFor(() => server.paneText()?.includes('half-drawn') === true);
+
+  // The server handles frames in order, so this answer shows it took the read before it.
+  client.sendTogether([
+    { type: 'paneRead', paneId: paneId(1) },
+    { type: 'paneSend', paneId: paneId(1), text: '' },
+  ]);
+
+  expect(await client.nextMessage()).toEqual({ type: 'paneSent', paneId: paneId(1) });
+  expect(client.messages.map((message) => message.type)).not.toContain('paneRows');
+
+  server.writeToPane("printf '\\033[2J\\033[Hfull-'\"drawn\"'\\033[?2026l'\n");
+
+  const read = await client.nextMessage();
+
+  if (read.type !== 'paneRows') {
+    throw new Error('Expected the live pane rows.');
+  }
+
+  const text = read.rows.join('\n');
+
+  expect(text).toContain('full-drawn');
+  expect(text).not.toContain('half-drawn');
+});
+
+it.each(['paneSend', 'stop'] as const)(
+  'answers paneRead with rows before a %s in the same write',
+  async (type) => {
+    const directory = await temporaryDirectory();
+    const { server, socketPath } = await startServer(directory);
+    const client = await connect(socketPath);
+
+    client.send({ type: 'hello', version: build, size: undefined });
+    expect(await client.nextMessage()).toEqual({ type: 'welcome' });
+    await client.nextMessage();
+
+    server.writeToPane("printf 'ready-marker\\n'\n");
+    await waitFor(() => server.paneText()?.includes('ready-marker') === true);
+
+    const next: ControlMessage =
+      type === 'paneSend' ? { type, paneId: paneId(1), text: '' } : { type };
+
+    client.sendTogether([{ type: 'paneRead', paneId: paneId(1) }, next]);
+
+    const read = await client.nextMessage();
+
+    if (read.type !== 'paneRows') {
+      throw new Error('Expected the live pane rows.');
+    }
+
+    expect(read.rows.join('\n')).toContain('ready-marker');
+
+    if (type === 'paneSend') {
+      expect(await client.nextMessage()).toEqual({ type: 'paneSent', paneId: paneId(1) });
+    }
   },
 );
 
