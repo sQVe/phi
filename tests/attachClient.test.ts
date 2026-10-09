@@ -227,6 +227,7 @@ const rowUpdate = (overrides: Partial<RowUpdate> = {}): RowUpdate => {
     rowCount: 1,
     cells,
     graphemes: new Uint32Array(),
+    colors: new Uint32Array(),
     ...overrides,
   };
 };

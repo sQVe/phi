@@ -47,6 +47,7 @@ const rowUpdate = (cells: TestCell[], cursorVisible = false): RowUpdate => {
     rowCount: 1,
     cells: words,
     graphemes: new Uint32Array(),
+    colors: new Uint32Array(),
   };
 };
 

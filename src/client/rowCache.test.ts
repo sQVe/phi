@@ -32,6 +32,7 @@ const rowUpdate = (rows: [number, string][], overrides: Partial<RowUpdate> = {})
     rowCount: rows.length,
     cells,
     graphemes: new Uint32Array(),
+    colors: new Uint32Array(),
     ...overrides,
   };
 };

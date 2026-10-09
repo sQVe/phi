@@ -57,6 +57,7 @@ interface Publication {
   stable: StableRows;
   frame: Frame;
   active: Row[];
+  colors: Uint32Array;
 }
 
 const renderHoldLimitMs = 1000;
@@ -213,6 +214,7 @@ const updateFor = (
     epoch: stable.epoch,
     first: stable.first,
     activeTop: stable.activeTop,
+    colors: publication.colors,
     ...rows,
   };
 };
@@ -395,7 +397,9 @@ export const createRowPublisher = (
     sequence += 1;
     previous = stable;
 
-    const publication: Publication = { pane, sequence, size, stable, frame, active };
+    const colors = terminal.colors();
+
+    const publication: Publication = { pane, sequence, size, stable, frame, active, colors };
 
     for (const subscriber of subscribers) {
       if (isPaused(subscriber)) {
