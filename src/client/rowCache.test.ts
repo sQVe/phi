@@ -82,6 +82,23 @@ it('reports every held active row when the active top moves', () => {
   expect(changed).toEqual([0, 1, 2]);
 });
 
+it('reports every held active row when only the colors change', () => {
+  const cache = createRowCache({ rowLimit: 50 });
+
+  cache.apply(
+    rowUpdate([
+      [0, 'a'],
+      [1, 'b'],
+    ]),
+  );
+
+  const colors = Uint32Array.of(1, 0x1_12_34_56);
+
+  expect(cache.apply(rowUpdate([], { colors, sequence: 2 }))).toEqual([0, 1]);
+  expect(cache.colors()).toEqual(new Map([[1, 0x1_12_34_56]]));
+  expect(cache.apply(rowUpdate([], { colors, sequence: 3 }))).toEqual([]);
+});
+
 it('keeps the latest size, cursor, and modes', () => {
   const cache = createRowCache({ rowLimit: 50 });
 

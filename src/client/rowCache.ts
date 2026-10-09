@@ -18,12 +18,38 @@ export interface RowCache {
   cursor: () => { x: number; y: number; visible: boolean } | undefined;
   // The ModeFlag bits that are on.
   modes: () => number;
+  // The colors the program set, by slot. Each color is 0x1000000 plus the 0xRRGGBB value.
+  colors: () => ReadonlyMap<number, number>;
   heldRowCount: () => number;
 }
 
 interface RowCacheOptions {
   rowLimit: number;
 }
+
+const colorsOf = (words: Uint32Array): Map<number, number> => {
+  const colors = new Map<number, number>();
+
+  for (let index = 0; index < words.length; index += 2) {
+    colors.set(words[index] ?? 0, words[index + 1] ?? 0);
+  }
+
+  return colors;
+};
+
+const sameColors = (left: ReadonlyMap<number, number>, right: ReadonlyMap<number, number>) => {
+  if (left.size !== right.size) {
+    return false;
+  }
+
+  for (const [slot, color] of left) {
+    if (right.get(slot) !== color) {
+      return false;
+    }
+  }
+
+  return true;
+};
 
 const clustersOf = (graphemes: Uint32Array, rowStart: number, stride: number) => {
   const clusters = new Map<number, string>();
@@ -52,6 +78,7 @@ export const createRowCache = ({ rowLimit }: RowCacheOptions): RowCache => {
   let size: { columns: number; rows: number } | undefined;
   let cursor: { x: number; y: number; visible: boolean } | undefined;
   let modes = 0;
+  let colors: ReadonlyMap<number, number> = new Map();
 
   const dropOldest = (): void => {
     if (rows.size <= rowLimit) {
@@ -96,13 +123,15 @@ export const createRowCache = ({ rowLimit }: RowCacheOptions): RowCache => {
       rows.clear();
     }
 
-    const scrolled = activeTop !== update.activeTop;
+    const updatedColors = colorsOf(update.colors);
+    const repaintAll = activeTop !== update.activeTop || !sameColors(colors, updatedColors);
 
     epoch = update.epoch;
     activeTop = update.activeTop;
     size = update.size;
     cursor = update.cursor;
     modes = update.modes;
+    colors = updatedColors;
 
     const stored = storeRows(update);
 
@@ -111,7 +140,7 @@ export const createRowCache = ({ rowLimit }: RowCacheOptions): RowCache => {
     const changed: number[] = [];
 
     for (let index = 0; index < update.size.rows; index++) {
-      const reported = scrolled || stored.has(activeTop + index);
+      const reported = repaintAll || stored.has(activeTop + index);
 
       if (reported && rows.has(activeTop + index)) {
         changed.push(index);
@@ -127,6 +156,7 @@ export const createRowCache = ({ rowLimit }: RowCacheOptions): RowCache => {
     size: () => size,
     cursor: () => cursor,
     modes: () => modes,
+    colors: () => colors,
     heldRowCount: () => rows.size,
   };
 };
