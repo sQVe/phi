@@ -8,6 +8,8 @@ import {
 } from '../protocol/protocol.ts';
 import type { BuildVersion, ControlMessage } from '../protocol/protocol.ts';
 
+export { connectAttach } from './attach.ts';
+
 type StopResult = { ok: true; close: () => void } | { ok: false; reason: 'noServer' };
 
 export type PaneCommand = { action: 'read' } | { action: 'send'; text: string };
