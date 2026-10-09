@@ -103,6 +103,9 @@ const stableRowsWords = 4;
 
 const scrollbackWords = 3;
 
+// Two words for each of the 256 palette slots and the default foreground and background.
+const maxColorWords = 516;
+
 const maxDimension = 65_535;
 
 // The FFI passes sizes as u16 and would wrap anything outside that range to another size.
@@ -175,6 +178,7 @@ const loadLibrary = () =>
     pane_end_render_hold: { args: [FFIType.ptr], returns: FFIType.void },
     pane_stable_rows: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.bool },
     pane_scrollback: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.void },
+    pane_colors: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.u64 },
     shim_ghostty_commit: { args: [], returns: FFIType.cstring },
   }).symbols;
 
@@ -205,6 +209,8 @@ export class Terminal {
   private readonly rangeInfo = new BigUint64Array(2);
 
   private readonly stableRowsInfo = new BigUint64Array(stableRowsWords);
+
+  private readonly colorWords = new Uint32Array(maxColorWords);
 
   private readonly scrollbackInfo = new BigUint64Array(scrollbackWords);
 
@@ -387,6 +393,16 @@ export class Terminal {
     const [rows = 0n, limitBytes = 0n, usedBytes = 0n] = this.scrollbackInfo;
 
     return { rows: Number(rows), limitBytes: Number(limitBytes), usedBytes: Number(usedBytes) };
+  }
+
+  // The colors the program changed with OSC 4, 10, and 11, as two words for each: the slot, then
+  // the color as 0x1000000 plus the 0xRRGGBB value. Slots 0-255 are palette indexes, and
+  // defaultForegroundSlot and defaultBackgroundSlot are the default colors. A color set to its
+  // default value is not listed.
+  colors(): Uint32Array {
+    const words = Number(this.symbols.pane_colors(this.live(), this.colorWords));
+
+    return this.colorWords.slice(0, words);
   }
 
   private growFrameBuffers(): void {

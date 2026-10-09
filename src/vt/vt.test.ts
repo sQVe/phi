@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'bun:test';
 
-import { CellFlag, CellWidth, cellWidthMask, cellWords, ModeFlag } from '../rows/rows.ts';
+import {
+  CellFlag,
+  CellWidth,
+  cellWidthMask,
+  cellWords,
+  defaultBackgroundSlot,
+  defaultForegroundSlot,
+  ModeFlag,
+} from '../rows/rows.ts';
 import type { Frame, StableRows, Terminal } from './vt.ts';
 import { createTerminal } from './vt.ts';
 
@@ -1186,5 +1194,80 @@ describe('reading history', () => {
       ...Array.from({ length: 9 }, (_, line) => `hist ${line} ${'x'.repeat(line)}`.trimEnd()),
       'AFTER',
     ]);
+  });
+});
+
+const rgb = (value: number) => 0x1_00_00_00 + value;
+
+describe('colors', () => {
+  const changeAll = (terminal: Terminal) =>
+    writeChunks(terminal, [
+      '\u001B]4;1;rgb:12/34/56\u001B\\',
+      '\u001B]10;rgb:aa/bb/cc\u001B\\',
+      '\u001B]11;rgb:01/02/03\u001B\\',
+    ]);
+
+  it('returns an empty list for a new terminal', () => {
+    using terminal = openTerminal();
+
+    expect([...terminal.colors()]).toEqual([]);
+  });
+
+  it('returns a palette entry a program changes with OSC 4', () => {
+    using terminal = openTerminal();
+    writeChunks(terminal, ['\u001B]4;1;rgb:12/34/56\u001B\\']);
+
+    expect([...terminal.colors()]).toEqual([1, rgb(0x12_34_56)]);
+  });
+
+  it('returns the default colors a program changes with OSC 10 and 11', () => {
+    using terminal = openTerminal();
+    writeChunks(terminal, ['\u001B]10;rgb:aa/bb/cc\u001B\\', '\u001B]11;rgb:01/02/03\u001B\\']);
+
+    expect([...terminal.colors()]).toEqual([
+      defaultForegroundSlot,
+      rgb(0xaa_bb_cc),
+      defaultBackgroundSlot,
+      rgb(0x01_02_03),
+    ]);
+  });
+
+  it('returns an empty list after a reset with RIS', () => {
+    using terminal = openTerminal();
+    changeAll(terminal);
+
+    writeChunks(terminal, ['\u001Bc']);
+
+    expect([...terminal.colors()]).toEqual([]);
+  });
+
+  it('removes only the slot OSC 104 resets', () => {
+    using terminal = openTerminal();
+
+    writeChunks(terminal, [
+      '\u001B]4;1;rgb:12/34/56\u001B\\',
+      '\u001B]4;2;rgb:65/43/21\u001B\\',
+      '\u001B]104;1\u001B\\',
+    ]);
+
+    expect([...terminal.colors()]).toEqual([2, rgb(0x65_43_21)]);
+  });
+
+  it('removes the default colors OSC 110 and 111 reset', () => {
+    using terminal = openTerminal();
+    changeAll(terminal);
+
+    writeChunks(terminal, ['\u001B]110\u001B\\']);
+
+    expect([...terminal.colors()]).toEqual([
+      1,
+      rgb(0x12_34_56),
+      defaultBackgroundSlot,
+      rgb(0x01_02_03),
+    ]);
+
+    writeChunks(terminal, ['\u001B]111\u001B\\']);
+
+    expect([...terminal.colors()]).toEqual([1, rgb(0x12_34_56)]);
   });
 });

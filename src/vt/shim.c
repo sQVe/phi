@@ -379,6 +379,45 @@ void pane_scrollback(Pane *pane, uint64_t *info) {
   info[2] = memory.primary_resident_bytes;
 }
 
+static bool rgb_equal(GhosttyColorRgb a, GhosttyColorRgb b) { return a.r == b.r && a.g == b.g && a.b == b.b; }
+
+// Appends the slot and the color key of a default color that differs from its default. A color
+// with no default counts as changed when it has a value.
+static size_t append_default_color(
+    Pane *pane, GhosttyTerminalData current_data, GhosttyTerminalData default_data, uint32_t slot, uint32_t *out) {
+  GhosttyColorRgb current;
+  GhosttyColorRgb initial;
+  if (ghostty_terminal_get(pane->terminal, current_data, &current) != GHOSTTY_SUCCESS) return 0;
+  bool has_default = ghostty_terminal_get(pane->terminal, default_data, &initial) == GHOSTTY_SUCCESS;
+  if (has_default && rgb_equal(current, initial)) return 0;
+  out[0] = slot;
+  out[1] = rgb_key(current);
+  return 2;
+}
+
+// Writes two words for each color a program changed with OSC 4, 10, or 11: the slot, then the
+// color key of the current color. Slots 0-255 are palette indexes, 256 is the default foreground,
+// and 257 the default background. Returns the words written, at most 516. libghostty-vt cannot
+// say whether an override is set, so a program that sets a color to its default value looks
+// unchanged.
+size_t pane_colors(Pane *pane, uint32_t *out) {
+  GhosttyColorRgb palette[256];
+  GhosttyColorRgb palette_default[256];
+  size_t words = 0;
+  ghostty_terminal_get(pane->terminal, GHOSTTY_TERMINAL_DATA_COLOR_PALETTE, palette);
+  ghostty_terminal_get(pane->terminal, GHOSTTY_TERMINAL_DATA_COLOR_PALETTE_DEFAULT, palette_default);
+  for (uint32_t index = 0; index < 256; index++) {
+    if (rgb_equal(palette[index], palette_default[index])) continue;
+    out[words++] = index;
+    out[words++] = rgb_key(palette[index]);
+  }
+  words += append_default_color(
+      pane, GHOSTTY_TERMINAL_DATA_COLOR_FOREGROUND, GHOSTTY_TERMINAL_DATA_COLOR_FOREGROUND_DEFAULT, 256, out + words);
+  words += append_default_color(
+      pane, GHOSTTY_TERMINAL_DATA_COLOR_BACKGROUND, GHOSTTY_TERMINAL_DATA_COLOR_BACKGROUND_DEFAULT, 257, out + words);
+  return words;
+}
+
 static GhosttyPoint active_top_point(void) {
   return (GhosttyPoint){.tag = GHOSTTY_POINT_TAG_ACTIVE, .value = {.coordinate = {.x = 0, .y = 0}}};
 }

@@ -56,6 +56,11 @@ type GraphemeProblem =
 // plus 1, and 0x1000000 plus the 0xRRGGBB value for an RGB color.
 export const cellWords = 4;
 
+// Color slots beside the 256 palette indexes: the default foreground and background.
+export const defaultForegroundSlot = 256;
+
+export const defaultBackgroundSlot = 257;
+
 // Bits of a cell's flags word.
 export enum CellFlag {
   bold = 0x1,
