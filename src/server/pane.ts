@@ -19,6 +19,8 @@ export interface PaneRuntime {
   // Resolves with the shell's exit code once it has exited.
   exited: Promise<number>;
   write: (bytes: Uint8Array) => void;
+  // Resizes the PTY and the terminal, and answers whatever the terminal replies to the shell.
+  resize: (size: TerminalSize) => void;
   text: () => string;
   // Sends SIGHUP to every process group in the shell's session, then SIGKILL to what is left after
   // the grace time.
@@ -160,6 +162,15 @@ export const spawnPane = (options: SpawnPaneOptions): SpawnPaneResult => {
     exited: shell.exited,
     write: (bytes) => {
       shell.terminal?.write(bytes);
+    },
+    resize: (size) => {
+      shell.terminal?.resize(size.columns, size.rows);
+
+      const reply = terminal.resize(size.columns, size.rows);
+
+      if (reply !== undefined) {
+        shell.terminal?.write(reply);
+      }
     },
     text: () => terminal.text(),
     stop,
