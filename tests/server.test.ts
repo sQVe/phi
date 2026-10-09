@@ -28,6 +28,7 @@ interface TestClient {
   updates: RowUpdate[];
   nextUpdate: () => Promise<RowUpdate>;
   closed: Promise<void>;
+  close: () => void;
   send: (message: ControlMessage) => void;
   sendTogether: (messages: ControlMessage[]) => void;
   nextMessage: () => Promise<ControlMessage>;
@@ -231,7 +232,18 @@ const connect = async (socketPath: string): Promise<TestClient> => {
     socket.write(Buffer.concat(frames));
   };
 
-  return { messages, updates, nextUpdate, closed, send, sendTogether, nextMessage };
+  return {
+    messages,
+    updates,
+    nextUpdate,
+    closed,
+    close: () => {
+      socket.end();
+    },
+    send,
+    sendTogether,
+    nextMessage,
+  };
 };
 
 const serverModule = join(import.meta.dir, '..', 'src', 'server', 'server.ts');
@@ -698,6 +710,124 @@ it('resizes the pane to the client size less the status bar when a sized hello a
   const update = await client.nextUpdate();
 
   expect(update.size).toEqual({ columns: 100, rows: 29 });
+});
+
+it('keeps change revisions consecutive when a stalled terminal overflows its write queue', async () => {
+  const directory = await temporaryDirectory();
+  const { server, socketPath } = await startServer(directory);
+  const stalled = createConnection(socketPath);
+
+  stalled.on('error', () => undefined);
+  onTestFinished(() => stalled.destroy());
+  await once(stalled, 'connect');
+  stalled.pause();
+
+  stalled.write(
+    encodeFrame(
+      FrameKind.control,
+      encodeControl({
+        type: 'hello',
+        version: build,
+        size: { columns: 80, rows: 1 },
+      }),
+    ),
+  );
+
+  await waitFor(() => server.snapshot().clients.length === 1);
+
+  const observer = await connect(socketPath);
+
+  observer.send({ type: 'hello', version: build, size: undefined });
+  await observer.nextMessage();
+
+  const initial = await observer.nextMessage();
+
+  if (initial.type !== 'snapshot') {
+    throw new Error('Expected the initial snapshot.');
+  }
+
+  const frames = Array.from({ length: 100 }, (_, index) =>
+    encodeFrame(
+      FrameKind.control,
+      encodeControl({ type: 'resize', size: { columns: 80, rows: (index % 2) + 1 } }),
+    ),
+  );
+
+  const batch = Buffer.concat(frames);
+  let latest = initial.snapshot;
+
+  for (let sent = 0; sent < 40_000 && latest.clients.length > 0; sent += frames.length) {
+    stalled.write(batch);
+    observer.send({ type: 'resync' });
+
+    for (;;) {
+      const message = await observer.nextMessage();
+
+      if (message.type === 'snapshot') {
+        latest = message.snapshot;
+
+        break;
+      }
+    }
+  }
+
+  expect(latest.clients).toEqual([]);
+  expect(latest.attachedClientId).toBeUndefined();
+
+  const changes = observer.messages.flatMap((message) =>
+    message.type === 'change' ? [message] : [],
+  );
+
+  const revisions = changes.map((message) => message.revision);
+  const expected = revisions.map((_, index) => initial.snapshot.revision + index + 1);
+
+  expect(revisions).toEqual(expected);
+  expect(changes.at(-1)?.change).toMatchObject({ type: 'clientDetached', reason: 'requested' });
+  expect(revisions.at(-1)).toBe(latest.revision);
+});
+
+it('removes a closed terminal client from subsequent snapshots', async () => {
+  const directory = await temporaryDirectory();
+  const { socketPath } = await startServer(directory);
+  const first = await connect(socketPath);
+
+  first.send({ type: 'hello', version: build, size: { columns: 100, rows: 30 } });
+  await nextPaneResize(first);
+  first.close();
+  await first.closed;
+
+  const second = await connect(socketPath);
+
+  second.send({ type: 'hello', version: build, size: undefined });
+  expect(await second.nextMessage()).toEqual({ type: 'welcome' });
+
+  expect(await second.nextMessage()).toMatchObject({
+    type: 'snapshot',
+    snapshot: { attachedClientId: undefined, clients: [] },
+  });
+});
+
+it('attaches after a closed terminal without a takeover change', async () => {
+  const directory = await temporaryDirectory();
+  const { socketPath } = await startServer(directory);
+  const first = await connect(socketPath);
+
+  first.send({ type: 'hello', version: build, size: { columns: 100, rows: 30 } });
+  await nextPaneResize(first);
+  first.close();
+  await first.closed;
+
+  const second = await connect(socketPath);
+
+  second.send({ type: 'hello', version: build, size: { columns: 90, rows: 20 } });
+  await nextPaneResize(second);
+
+  const changes = second.messages.flatMap((message) =>
+    message.type === 'change' ? [message.change] : [],
+  );
+
+  expect(changes.some((change) => change.type === 'clientAttached')).toBe(true);
+  expect(changes.filter((change) => change.type === 'clientDetached')).toEqual([]);
 });
 
 it('resizes the pane when an attached client sends resize', async () => {
