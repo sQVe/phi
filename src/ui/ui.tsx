@@ -2,7 +2,7 @@ import { createCliRenderer } from '@opentui/core';
 import type { BoxRenderable, CliRenderer } from '@opentui/core';
 import { createRoot } from '@opentui/react';
 
-import type { AttachSession } from '../client/client.ts';
+import type { AttachSession, CloseReason } from '../client/client.ts';
 import { PaneRenderable } from './paneRenderable.ts';
 import { StatusBar } from './statusBar.tsx';
 
@@ -38,7 +38,7 @@ const mountPane = (session: AttachSession, renderer: CliRenderer, box: BoxRender
   return unsubscribe;
 };
 
-export const runAttach = async (session: AttachSession): Promise<void> => {
+export const runAttach = async (session: AttachSession): Promise<CloseReason> => {
   const renderer = await createCliRenderer({ exitOnCtrlC: false, exitSignals: [] });
   const root = createRoot(renderer);
   const signals = ['SIGTERM', 'SIGINT', 'SIGHUP'] as const;
@@ -75,7 +75,7 @@ export const runAttach = async (session: AttachSession): Promise<void> => {
   );
 
   try {
-    await session.closed;
+    return await session.closed;
   } finally {
     for (const signal of signals) {
       process.off(signal, stop);

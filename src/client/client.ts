@@ -9,7 +9,7 @@ import {
 import type { BuildVersion, ControlMessage } from '../protocol/protocol.ts';
 
 export { connectAttach } from './attach.ts';
-export type { AttachSession } from './attach.ts';
+export type { AttachSession, CloseReason } from './attach.ts';
 export { createRowCache } from './rowCache.ts';
 export type { RowCache } from './rowCache.ts';
 

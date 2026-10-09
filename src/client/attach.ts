@@ -25,7 +25,7 @@ interface AttachState {
   inputMode: 'normal';
 }
 
-type CloseReason = 'serverClosed' | 'connectionFailed' | 'requested';
+export type CloseReason = 'serverClosed' | 'connectionFailed' | 'requested';
 
 interface RowsChanged {
   pane: PaneId;
