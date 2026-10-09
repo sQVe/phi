@@ -395,10 +395,10 @@ export class Terminal {
     return { rows: Number(rows), limitBytes: Number(limitBytes), usedBytes: Number(usedBytes) };
   }
 
-  // The colors the program changed with OSC 4, 10, and 11, as two words for each: the slot, then
+  // The colors the program set with OSC 4, 10, and 11, as two words for each: the slot, then
   // the color as 0x1000000 plus the 0xRRGGBB value. Slots 0-255 are palette indexes, and
   // defaultForegroundSlot and defaultBackgroundSlot are the default colors. A color set to its
-  // default value is not listed.
+  // default value is listed too.
   colors(): Uint32Array {
     const words = Number(this.symbols.pane_colors(this.live(), this.colorWords));
 

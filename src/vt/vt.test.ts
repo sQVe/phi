@@ -1220,6 +1220,20 @@ describe('colors', () => {
     expect([...terminal.colors()]).toEqual([1, rgb(0x12_34_56)]);
   });
 
+  it('returns a default color a program sets to its seeded value', () => {
+    using terminal = openTerminal();
+    writeChunks(terminal, ['\u001B]11;rgb:00/00/00\u001B\\']);
+
+    expect([...terminal.colors()]).toEqual([defaultBackgroundSlot, rgb(0)]);
+  });
+
+  it('returns a palette entry a program sets to its default value', () => {
+    using terminal = openTerminal();
+    writeChunks(terminal, ['\u001B]4;1;rgb:cc/66/66\u001B\\']);
+
+    expect([...terminal.colors()]).toEqual([1, rgb(0xcc_66_66)]);
+  });
+
   it('returns the default colors a program changes with OSC 10 and 11', () => {
     using terminal = openTerminal();
     writeChunks(terminal, ['\u001B]10;rgb:aa/bb/cc\u001B\\', '\u001B]11;rgb:01/02/03\u001B\\']);
