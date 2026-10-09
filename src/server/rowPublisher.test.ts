@@ -357,6 +357,65 @@ it('ends an overdue hold even before any subscriber joins', async () => {
   expect(rowsOf(lastUpdate(updates)).get(0)).toBe('ready');
 });
 
+const settled = async (promise: Promise<void>): Promise<boolean> =>
+  Promise.race([promise.then(() => true), Bun.sleep(1).then(() => false)]);
+
+it('resolves whenReleased at once when no hold is active', async () => {
+  const terminal = terminalForTest();
+  const publisher = publisherForTest(terminal);
+
+  expect(await settled(publisher.whenReleased())).toBe(true);
+});
+
+it('resolves whenReleased after the program ends the hold', async () => {
+  const terminal = terminalForTest();
+  const publisher = publisherForTest(terminal);
+
+  terminal.write(encoder.encode('\u001B[?2026hheld'));
+  terminal.stableRows();
+  publisher.publish();
+
+  const released = publisher.whenReleased();
+
+  expect(await settled(released)).toBe(false);
+
+  terminal.write(encoder.encode('\u001B[?2026l'));
+  terminal.stableRows();
+  publisher.publish();
+
+  expect(await settled(released)).toBe(true);
+});
+
+it('resolves whenReleased after the watchdog even if no publication saw the hold', async () => {
+  const terminal = terminalForTest();
+  const publisher = publisherForTest(terminal, 5);
+
+  terminal.write(encoder.encode('\u001B[?2026hheld'));
+  terminal.stableRows();
+
+  const released = publisher.whenReleased();
+
+  expect(await settled(released)).toBe(false);
+
+  await Promise.race([released, Bun.sleep(200)]);
+
+  expect(await settled(released)).toBe(true);
+  expect(terminal.renderHeld()).toBe(false);
+});
+
+it('resolves whenReleased on dispose', async () => {
+  const terminal = terminalForTest();
+  const publisher = publisherForTest(terminal);
+
+  terminal.write(encoder.encode('\u001B[?2026hheld'));
+
+  const released = publisher.whenReleased();
+
+  publisher[Symbol.dispose]();
+
+  expect(await settled(released)).toBe(true);
+});
+
 it.each(['release', 'dispose'] as const)('cancels the hold watchdog on %s', async (action) => {
   const terminal = terminalForTest();
   const requests: string[] = [];
