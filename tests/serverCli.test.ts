@@ -738,6 +738,7 @@ it.each([
   'server stop now',
   'server stop --socket',
   'pane',
+  'pane restart',
   'pane read text',
   'pane send',
   'pane send one two',
@@ -750,19 +751,6 @@ it.each([
     const run = await runCli(commandLine.split(' '), directory);
 
     expect({ exitCode: run.exitCode, stdout: run.stdout }).toEqual({ exitCode: 2, stdout: '' });
-  },
-  cliTestTimeoutMs,
-);
-
-it.each([['pane'], ['pane restart']])(
-  'names an unknown pane command and prints the usage: %s',
-  async (commandLine) => {
-    const directory = await temporaryDirectory();
-
-    const run = await runCli(commandLine.split(' '), directory);
-
-    expect({ exitCode: run.exitCode, stdout: run.stdout }).toEqual({ exitCode: 2, stdout: '' });
-    expect(run.stderr).toStartWith('phi: Unknown pane command.\nUsage:\n');
   },
   cliTestTimeoutMs,
 );
