@@ -31,6 +31,8 @@ interface RowsChanged {
   pane: PaneId;
   // The indexes of the active screen rows that changed.
   rows: number[];
+  // The sequence of the row update. Pass it to acknowledge once the rows are drawn.
+  sequence: number;
 }
 
 export interface AttachSession {
@@ -38,7 +40,11 @@ export interface AttachSession {
   getState: () => AttachState;
   subscribeRows: (listener: (changed: RowsChanged) => void) => () => void;
   rowCache: (pane: PaneId) => RowCache | undefined;
+  // The sequence of the newest row update applied to the pane's cache, drawn or not.
+  newestSequence: (pane: PaneId) => number | undefined;
   resize: (size: TerminalSize) => void;
+  // Tells the server the client has drawn every row update up to this sequence.
+  acknowledge: (sequence: number) => void;
   close: () => void;
   closed: Promise<CloseReason>;
 }
@@ -61,6 +67,7 @@ export const connectAttach = async (
   const closedSignal = Promise.withResolvers<CloseReason>();
   const decoder = createFrameDecoder();
   const rowCaches = new Map<PaneId, RowCache>();
+  const newestSequences = new Map<PaneId, number>();
   const stateListeners = new Set<() => void>();
   const rowListeners = new Set<(changed: RowsChanged) => void>();
   let pending: Uint8Array = new Uint8Array();
@@ -147,8 +154,10 @@ export const connectAttach = async (
 
     const rows = cache.apply(decoded.update);
 
+    newestSequences.set(pane, decoded.update.sequence);
+
     for (const listener of rowListeners) {
-      listener({ pane, rows });
+      listener({ pane, rows, sequence: decoded.update.sequence });
     }
   };
 
@@ -252,8 +261,14 @@ export const connectAttach = async (
       };
     },
     rowCache: (pane) => rowCaches.get(pane),
+    newestSequence: (pane) => newestSequences.get(pane),
     resize: (next) => {
       send({ type: 'resize', size: next });
+    },
+    acknowledge: (sequence) => {
+      if (!ended) {
+        send({ type: 'ack', sequence });
+      }
     },
     close: () => {
       end('requested');

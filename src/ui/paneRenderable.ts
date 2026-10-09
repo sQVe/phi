@@ -8,6 +8,8 @@ interface PaneRenderableOptions {
   cache: RowCache;
   width: number;
   height: number;
+  // Called once per render with the newest sequence passed to draw since the last render.
+  onDrawn?: (sequence: number) => void;
 }
 
 interface Cursor {
@@ -78,15 +80,26 @@ const sameCursor = (left: Cursor | undefined, right: Cursor | undefined): boolea
 export class PaneRenderable extends FrameBufferRenderable {
   private readonly cache: RowCache;
   private readonly pending = new Set<number>();
+  private readonly onDrawn: ((sequence: number) => void) | undefined;
   private drawnCursor: Cursor | undefined;
+  private pendingSequence: number | undefined;
 
-  public constructor(context: RenderContext, { cache, width, height }: PaneRenderableOptions) {
+  public constructor(
+    context: RenderContext,
+    { cache, width, height, onDrawn }: PaneRenderableOptions,
+  ) {
     super(context, { width, height });
     this.cache = cache;
+    this.onDrawn = onDrawn;
   }
 
-  // Marks cache rows, counted from the active screen's top, for drawing on the next frame.
-  public draw(rows: readonly number[]): void {
+  // Marks cache rows, counted from the active screen's top, for drawing on the next frame. The
+  // sequence is the row update that changed them, if any.
+  public draw(rows: readonly number[], sequence?: number): void {
+    if (sequence !== undefined) {
+      this.pendingSequence = sequence;
+    }
+
     for (const row of rows) {
       this.pending.add(row);
     }
@@ -102,6 +115,14 @@ export class PaneRenderable extends FrameBufferRenderable {
   protected override renderSelf(buffer: OptimizedBuffer): void {
     this.drawPending();
     super.renderSelf(buffer);
+
+    const sequence = this.pendingSequence;
+
+    this.pendingSequence = undefined;
+
+    if (sequence !== undefined) {
+      this.onDrawn?.(sequence);
+    }
   }
 
   private drawPending(): void {

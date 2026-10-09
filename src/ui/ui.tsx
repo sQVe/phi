@@ -9,7 +9,7 @@ import { StatusBar } from './statusBar.tsx';
 const mountPane = (session: AttachSession, renderer: CliRenderer, box: BoxRenderable) => {
   let pane: PaneRenderable | undefined;
 
-  const draw = (rows?: readonly number[]): void => {
+  const draw = (rows?: readonly number[], sequence?: number): void => {
     const current = session.getState().snapshot.pane;
     const cache = current === undefined ? undefined : session.rowCache(current.id);
     const size = cache?.size();
@@ -19,21 +19,30 @@ const mountPane = (session: AttachSession, renderer: CliRenderer, box: BoxRender
     }
 
     if (pane === undefined) {
-      pane = new PaneRenderable(renderer, { cache, width: size.columns, height: size.rows });
+      pane = new PaneRenderable(renderer, {
+        cache,
+        width: size.columns,
+        height: size.rows,
+        onDrawn: session.acknowledge,
+      });
+
       box.add(pane);
     }
 
     pane.resize(size.columns, size.rows);
     const changed = rows ?? Array.from({ length: size.rows }, (_, index) => index);
 
-    pane.draw(changed);
+    pane.draw(changed, sequence);
   };
 
-  const unsubscribe = session.subscribeRows(({ rows }) => {
-    draw(rows);
+  const unsubscribe = session.subscribeRows(({ rows, sequence }) => {
+    draw(rows, sequence);
   });
 
-  draw();
+  const current = session.getState().snapshot.pane;
+  const newest = current === undefined ? undefined : session.newestSequence(current.id);
+
+  draw(undefined, newest);
 
   return unsubscribe;
 };

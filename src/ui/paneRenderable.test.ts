@@ -157,3 +157,34 @@ it('moves the cursor inside one row without new rows', async () => {
 
   expect(invertedColumns()).toEqual([2]);
 });
+
+it('reports the newest drawn sequence once, only after a render', async () => {
+  const drawn: number[] = [];
+  const created = await createTestRenderer({ width: columns, height: 1 });
+  const cache = createRowCache({ rowLimit: 10 });
+
+  const pane = new PaneRenderable(created.renderer, {
+    cache,
+    width: columns,
+    height: 1,
+    onDrawn: (sequence) => {
+      drawn.push(sequence);
+    },
+  });
+
+  setup = created;
+  created.renderer.root.add(pane);
+
+  pane.draw(cache.apply(rowUpdate([{ column: 0, codePoint: 0x61 }])), 1);
+  pane.draw(cache.apply(rowUpdate([{ column: 1, codePoint: 0x62 }])), 2);
+
+  expect(drawn).toEqual([]);
+
+  await created.renderOnce();
+
+  expect(drawn).toEqual([2]);
+
+  await created.renderOnce();
+
+  expect(drawn).toEqual([2]);
+});
