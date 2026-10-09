@@ -16,7 +16,7 @@ type ImportSource =
   | ESTree.ExportNamedDeclaration
   | ESTree.ExportAllDeclaration;
 
-const folderModules = new Set(['vt', 'rows', 'store', 'protocol', 'server', 'client', 'ui']);
+const folderModules = new Set(['vt', 'rows', 'store', 'protocol', 'server', 'client', 'ui', 'cli']);
 const flatModules = new Set(['ids', 'invariant', 'layout', 'index']);
 
 const allowedImports = new Map<string, Set<string>>([
@@ -30,6 +30,7 @@ const allowedImports = new Map<string, Set<string>>([
   ['server', new Set(['ids', 'invariant', 'vt', 'rows', 'layout', 'store', 'protocol'])],
   ['client', new Set(['ids', 'invariant', 'rows', 'protocol'])],
   ['ui', new Set(['ids', 'invariant', 'client'])],
+  ['cli', new Set(['ids', 'invariant', 'protocol', 'server', 'client', 'vt'])],
   ['index', new Set([...folderModules, ...flatModules])],
 ]);
 
@@ -38,7 +39,7 @@ const typeOnlyImports = new Map([['protocol', new Set(['store'])]]);
 // Files outside src/ that a module may import, relative to the package root. The binary embeds them.
 const outsideImports = new Map([
   ['vt', new Set([join('build', 'libphi-vt.so')])],
-  ['index', new Set(['package.json'])],
+  ['cli', new Set(['package.json'])],
 ]);
 
 const runtimeModules = new Set(['ids', 'invariant', 'rows', 'layout', 'store']);
@@ -53,6 +54,7 @@ const rendererFreeModules = new Set([
   'protocol',
   'server',
   'client',
+  'cli',
 ]);
 
 const packageRoots = new Map<string, string | undefined>();
