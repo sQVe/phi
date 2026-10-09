@@ -20,9 +20,11 @@ interface TerminalSize {
   rows: number;
 }
 
+export type InputMode = 'insert' | 'normal';
+
 interface AttachState {
   snapshot: StoreSnapshot;
-  inputMode: 'normal';
+  inputMode: InputMode;
 }
 
 export type CloseReason = 'serverClosed' | 'connectionFailed' | 'requested';
@@ -46,6 +48,7 @@ export interface TerminalTheme {
 export interface AttachSession {
   subscribe: (listener: () => void) => () => void;
   getState: () => AttachState;
+  setInputMode: (mode: InputMode) => void;
   subscribeRows: (listener: (changed: RowsChanged) => void) => () => void;
   rowCache: (pane: PaneId) => RowCache | undefined;
   // The sequence of the newest row update applied to the pane's cache, drawn or not.
@@ -132,7 +135,7 @@ export const connectAttach = async (
 
   const takeSnapshot = (snapshot: StoreSnapshot): void => {
     waitingForSnapshot = false;
-    setState({ snapshot, inputMode: 'normal' });
+    setState({ snapshot, inputMode: state?.inputMode ?? 'insert' });
   };
 
   const takeChange = (revision: number, change: StoreChange): void => {
@@ -266,6 +269,13 @@ export const connectAttach = async (
       invariant(state !== undefined, 'The attach session is only handed out after a snapshot.');
 
       return state;
+    },
+    setInputMode: (mode) => {
+      invariant(state !== undefined, 'The attach session is only handed out after a snapshot.');
+
+      if (state.inputMode !== mode) {
+        setState({ ...state, inputMode: mode });
+      }
     },
     subscribeRows: (listener) => {
       rowListeners.add(listener);

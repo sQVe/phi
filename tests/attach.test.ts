@@ -141,7 +141,7 @@ it('shows the shell screen and cursor', async () => {
   const outputRow = rows.indexOf('phi-attach-ok');
 
   expect(rows[outputRow + 1]).toContain('attach-prompt>');
-  expect(screen.text()).toContain('normal');
+  expect(screen.text()).toContain('INSERT');
   screen.markAllDirty();
 
   const frame = screen.frame();
@@ -156,12 +156,12 @@ it('shows the shell screen and cursor', async () => {
 it('resizes the pane to the client size less the status bar', async () => {
   const { client, screen, socketPath, command } = await setup();
 
-  expect(await waitFor(() => screen.text().includes('normal'))).toBe(true);
+  expect(await waitFor(() => screen.text().includes('INSERT'))).toBe(true);
   screen.resize(100, 30);
   client.terminal?.resize(100, 30);
   await command('pane', 'send', 'echo resized-screen\r');
 
-  expect(await waitFor(() => screen.text().split('\n')[29] === 'normal')).toBe(true);
+  expect(await waitFor(() => screen.text().split('\n')[29] === 'INSERT')).toBe(true);
   expect(await readPaneSize(socketPath)).toEqual({ columns: 100, rows: 29 });
   expect(screen.text()).toContain('resized-screen');
 });
@@ -171,7 +171,7 @@ it.each(['SIGTERM', 'SIGINT', 'SIGHUP'] as const)(
   async (signal) => {
     const { client, screen, command } = await setup();
 
-    expect(await waitFor(() => screen.text().includes('normal'))).toBe(true);
+    expect(await waitFor(() => screen.text().includes('INSERT'))).toBe(true);
     expect(screen.stableRows().alternate).toBe(true);
     client.kill(signal);
 
@@ -278,7 +278,7 @@ it('exits with code one and reports a connection failure after the handshake', a
 it('exits with code zero when the server stops', async () => {
   const { client, screen, command } = await setup();
 
-  expect(await waitFor(() => screen.text().includes('normal'))).toBe(true);
+  expect(await waitFor(() => screen.text().includes('INSERT'))).toBe(true);
   await command('server', 'stop');
 
   expect(await client.exited).toBe(0);

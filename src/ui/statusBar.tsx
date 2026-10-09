@@ -8,7 +8,7 @@ export const StatusBar = ({ session }: { session: AttachSession }): ReactNode =>
 
   return (
     <text height={1} flexShrink={0}>
-      {state.inputMode}
+      {state.inputMode.toUpperCase()}
     </text>
   );
 };

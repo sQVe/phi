@@ -1,8 +1,9 @@
 import { createCliRenderer } from '@opentui/core';
-import type { BoxRenderable, CliRenderer } from '@opentui/core';
+import type { BoxRenderable, CliRenderer, KeyEvent, PasteEvent } from '@opentui/core';
 import { createRoot } from '@opentui/react';
 
 import type { AttachSession, CloseReason } from '../client/client.ts';
+import { routeKey, routePaste } from './input.ts';
 import { PaneRenderable } from './paneRenderable.ts';
 import { StatusBar } from './statusBar.tsx';
 import { themeFromDetectedColors } from './terminalTheme.ts';
@@ -62,8 +63,46 @@ const reportTheme = async (session: AttachSession, renderer: CliRenderer): Promi
   }
 };
 
+const paneModes = (session: AttachSession): number => {
+  const current = session.getState().snapshot.pane;
+
+  return current === undefined ? 0 : (session.rowCache(current.id)?.modes() ?? 0);
+};
+
+const routeInput = (session: AttachSession) => {
+  const sendToPane = (bytes: Uint8Array): void => {
+    const current = session.getState().snapshot.pane;
+
+    if (current !== undefined && bytes.length > 0) {
+      session.sendInput(current.id, bytes);
+    }
+  };
+
+  const onKey = (key: KeyEvent): void => {
+    const routed = routeKey(key.raw, session.getState().inputMode, paneModes(session));
+
+    sendToPane(routed.bytes);
+    session.setInputMode(routed.mode);
+  };
+
+  const onPaste = (event: PasteEvent): void => {
+    sendToPane(routePaste(event.bytes, paneModes(session)));
+  };
+
+  return { onKey, onPaste };
+};
+
 export const runAttach = async (session: AttachSession): Promise<CloseReason> => {
-  const renderer = await createCliRenderer({ exitOnCtrlC: false, exitSignals: [] });
+  // OpenTUI turns on Kitty key reporting for a null setting too. With every flag off, key.raw
+  // stays the legacy bytes the pane expects.
+  const renderer = await createCliRenderer({
+    exitOnCtrlC: false,
+    exitSignals: [],
+    useKittyKeyboard: { disambiguate: false, alternateKeys: false },
+    useMouse: false,
+  });
+
+  const { onKey, onPaste } = routeInput(session);
   const root = createRoot(renderer);
   const signals = ['SIGTERM', 'SIGINT', 'SIGHUP'] as const;
   let unmountPane: (() => void) | undefined;
@@ -89,6 +128,8 @@ export const runAttach = async (session: AttachSession): Promise<CloseReason> =>
   }
 
   renderer.on('resize', resize);
+  renderer.keyInput.on('keypress', onKey);
+  renderer.keyInput.on('paste', onPaste);
   resize(renderer.terminalWidth, renderer.terminalHeight);
 
   reportTheme(session, renderer).catch(() => {
@@ -110,6 +151,8 @@ export const runAttach = async (session: AttachSession): Promise<CloseReason> =>
     }
 
     renderer.off('resize', resize);
+    renderer.keyInput.off('keypress', onKey);
+    renderer.keyInput.off('paste', onPaste);
     unmountPane?.();
     root.unmount();
     renderer.destroy();

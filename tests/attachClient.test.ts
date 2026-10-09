@@ -198,7 +198,36 @@ it('sends resync after a revision gap and applies the next snapshot', async () =
   await untilState(session, () => session.getState().snapshot.revision === 5);
 
   expect(server.received.map((message) => message.type)).toEqual(['hello', 'resync']);
-  expect(session.getState()).toEqual({ snapshot: snapshotAt(5, 1), inputMode: 'normal' });
+  expect(session.getState()).toEqual({ snapshot: snapshotAt(5, 1), inputMode: 'insert' });
+});
+
+it('notifies subscribers of an input mode change and keeps it across a snapshot', async () => {
+  const server = await listen((message) => {
+    if (message.type === 'hello') {
+      return [{ type: 'welcome' }, snapshotMessage(1)];
+    }
+
+    return message.type === 'resize' ? [snapshotMessage(2)] : [];
+  });
+
+  const session = await attach(server);
+  let notified = 0;
+
+  session.subscribe(() => {
+    notified += 1;
+  });
+
+  expect(session.getState().inputMode).toBe('insert');
+
+  session.setInputMode('normal');
+  session.setInputMode('normal');
+
+  expect(notified).toBe(1);
+
+  session.resize(size);
+  await untilState(session, () => session.getState().snapshot.revision === 2);
+
+  expect(session.getState().inputMode).toBe('normal');
 });
 
 it('applies a change whose revision follows the snapshot', async () => {
