@@ -595,13 +595,24 @@ const openConnection = (context: ServerContext, socket: Bun.Socket<ConnectionDat
 const closeConnection = (context: ServerContext, id: number): void => {
   const connection = context.runtime.connections.get(id);
 
-  connection?.close();
-
-  if (connection !== undefined) {
-    context.runtime.clientIds.delete(connection);
+  if (connection === undefined) {
+    return;
   }
 
+  const clientId = context.runtime.clientIds.get(connection);
+
   context.runtime.connections.delete(id);
+  context.runtime.clientIds.delete(connection);
+  connection.close();
+
+  if (clientId !== undefined) {
+    // A socket can close during publication. Finish that batch before publishing its detach.
+    queueMicrotask(() => {
+      if (!context.state.stopping) {
+        dispatch(context, { type: 'detachClient', clientId });
+      }
+    });
+  }
 };
 
 // Clears every bit but the owner's read and write, so the socket is 0600 from its bind.
