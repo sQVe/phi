@@ -576,7 +576,7 @@ const allowedEdges: Record<ModuleName, ModuleName[]> = {
   server: ['ids', 'invariant', 'vt', 'rows', 'layout', 'store', 'protocol'],
   client: ['ids', 'invariant', 'rows', 'protocol'],
   ui: ['ids', 'invariant', 'rows', 'client'],
-  cli: ['ids', 'invariant', 'protocol', 'server', 'client', 'vt'],
+  cli: ['ids', 'invariant', 'protocol', 'server', 'client', 'vt', 'ui'],
   index: [
     'ids',
     'invariant',

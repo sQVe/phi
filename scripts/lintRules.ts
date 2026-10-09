@@ -30,7 +30,7 @@ const allowedImports = new Map<string, Set<string>>([
   ['server', new Set(['ids', 'invariant', 'vt', 'rows', 'layout', 'store', 'protocol'])],
   ['client', new Set(['ids', 'invariant', 'rows', 'protocol'])],
   ['ui', new Set(['ids', 'invariant', 'rows', 'client'])],
-  ['cli', new Set(['ids', 'invariant', 'protocol', 'server', 'client', 'vt'])],
+  ['cli', new Set(['ids', 'invariant', 'protocol', 'server', 'client', 'vt', 'ui'])],
   ['index', new Set([...folderModules, ...flatModules])],
 ]);
 

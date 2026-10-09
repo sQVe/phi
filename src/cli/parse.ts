@@ -22,7 +22,12 @@ export interface ServerCommand extends CommandOptions {
   action: ServerAction;
 }
 
-export type Command = VersionCommand | PaneCliCommand | ServerCommand;
+export interface AttachCommand {
+  kind: 'attach';
+  socket: string | undefined;
+}
+
+export type Command = VersionCommand | PaneCliCommand | ServerCommand | AttachCommand;
 
 const serverActions = ['run', 'start', 'stop'] as const;
 
@@ -30,6 +35,7 @@ type ServerAction = (typeof serverActions)[number];
 
 export const usage = `Usage:
   phi --version [--json]
+  phi attach [--socket <path>]
   phi server run [--socket <path>] [--json]
   phi server start [--socket <path>] [--json]
   phi server stop [--socket <path>] [--json]
@@ -55,6 +61,17 @@ const parsePaneCommand = (action: string | undefined, rest: string[]): PaneComma
   return 'pane read takes no text; pane send takes one text argument.';
 };
 
+const parseAttachCommand = (
+  positionals: string[],
+  options: CommandOptions,
+): AttachCommand | string => {
+  if (positionals.length !== 1 || options.json) {
+    return 'attach takes only --socket.';
+  }
+
+  return { kind: 'attach', socket: options.socket };
+};
+
 export const parseCommand = (argv: string[]): Command | string => {
   try {
     const { values, positionals } = parseArgs({
@@ -75,6 +92,10 @@ export const parseCommand = (argv: string[]): Command | string => {
       const hasExtra = positionals.length > 0 || values.socket !== undefined;
 
       return hasExtra ? '--version takes only --json.' : { kind: 'version', json };
+    }
+
+    if (group === 'attach') {
+      return parseAttachCommand(positionals, { json, socket: values.socket });
     }
 
     if (group === 'pane') {

@@ -33,7 +33,7 @@ interface RowsChanged {
   rows: number[];
 }
 
-interface AttachSession {
+export interface AttachSession {
   subscribe: (listener: () => void) => () => void;
   getState: () => AttachState;
   subscribeRows: (listener: (changed: RowsChanged) => void) => () => void;

@@ -1,6 +1,8 @@
 {
   "compilerOptions": {
     "target": "ES2024",
+    "jsx": "react-jsx",
+    "jsxImportSource": "@opentui/react",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "lib": ["ES2024"],
@@ -21,5 +23,5 @@
     "allowUnusedLabels": false,
     "types": ["bun"]
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts", "vite.config.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts", "scripts/**/*.ts", "vite.config.ts"]
 }

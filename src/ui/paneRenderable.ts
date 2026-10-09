@@ -85,6 +85,11 @@ export class PaneRenderable extends FrameBufferRenderable {
     this.requestRender();
   }
 
+  public resize(width: number, height: number): void {
+    this.width = width;
+    this.height = height;
+  }
+
   protected override renderSelf(buffer: OptimizedBuffer): void {
     this.drawPending();
     super.renderSelf(buffer);

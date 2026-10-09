@@ -46,7 +46,7 @@ import which. Modules name their owner, and lint refuses imports that cross the 
 | `server`    | `ids`, `invariant`, `vt`, `rows`, `layout`, `store`, `protocol`             |
 | `client`    | `ids`, `invariant`, `rows`, `protocol`                                      |
 | `ui`        | `ids`, `invariant`, `rows`, `client`                                        |
-| `cli`       | `ids`, `invariant`, `protocol`, `server`, `client`, `vt`                    |
+| `cli`       | `ids`, `invariant`, `protocol`, `server`, `client`, `vt`, `ui`              |
 | `index`     | any module. It is the binary's entry and calls `cli`. No module imports it. |
 
 - `ids`, `invariant`, `rows`, `layout`, and `store` import no Node or Bun built-ins.
