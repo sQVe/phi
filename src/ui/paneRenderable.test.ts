@@ -1,5 +1,6 @@
 import { afterEach, expect, it } from 'bun:test';
 
+import { TextAttributes } from '@opentui/core';
 import { createTestRenderer } from '@opentui/core/testing';
 import type { TestRendererSetup } from '@opentui/core/testing';
 
@@ -123,4 +124,36 @@ it('shows the erased background of a cell with no character', async () => {
 
   expect(created.captureCharFrame().trim()).toBe('');
   expect(red).toBeDefined();
+});
+
+it('moves the cursor inside one row without new rows', async () => {
+  const { show, created } = await startPane();
+
+  const invertedColumns = (): number[] => {
+    const spans = created.captureSpans().lines[0]?.spans ?? [];
+    let column = 0;
+    const inverted: number[] = [];
+
+    for (const span of spans) {
+      if ((span.attributes & TextAttributes.INVERSE) !== 0) {
+        inverted.push(column);
+      }
+
+      column += span.width;
+    }
+
+    return inverted;
+  };
+
+  await show(rowUpdate([{ column: 0, codePoint: 0x61 }], true));
+  expect(invertedColumns()).toEqual([0]);
+
+  const moved = rowUpdate([], true);
+
+  moved.rowCount = 0;
+  moved.cells = new Uint32Array();
+  moved.cursor = { x: 2, y: 0, visible: true };
+  await show(moved);
+
+  expect(invertedColumns()).toEqual([2]);
 });

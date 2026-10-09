@@ -96,6 +96,8 @@ export const createRowCache = ({ rowLimit }: RowCacheOptions): RowCache => {
       rows.clear();
     }
 
+    const scrolled = activeTop !== update.activeTop;
+
     epoch = update.epoch;
     activeTop = update.activeTop;
     size = update.size;
@@ -109,7 +111,9 @@ export const createRowCache = ({ rowLimit }: RowCacheOptions): RowCache => {
     const changed: number[] = [];
 
     for (let index = 0; index < update.size.rows; index++) {
-      if (stored.has(activeTop + index) && rows.has(activeTop + index)) {
+      const reported = scrolled || stored.has(activeTop + index);
+
+      if (reported && rows.has(activeTop + index)) {
         changed.push(index);
       }
     }

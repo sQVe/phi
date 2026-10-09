@@ -10,6 +10,12 @@ interface PaneRenderableOptions {
   height: number;
 }
 
+interface Cursor {
+  x: number;
+  y: number;
+  visible: boolean;
+}
+
 const rgbColorBase = 0x1_00_00_00;
 
 const paletteLimit = 256;
@@ -64,12 +70,15 @@ const attributesOf = (flags: number): number => {
 
 const isSpacer = (flags: number): boolean => spacerWidths.has(flags & cellWidthMask);
 
+const sameCursor = (left: Cursor | undefined, right: Cursor | undefined): boolean =>
+  left?.x === right?.x && left?.y === right?.y && left?.visible === right?.visible;
+
 // Draws the rows of one pane from its row cache. The frame buffer keeps the rows that did not
 // change, so each frame draws only the rows named by draw.
 export class PaneRenderable extends FrameBufferRenderable {
   private readonly cache: RowCache;
   private readonly pending = new Set<number>();
-  private cursorRow: number | undefined;
+  private drawnCursor: Cursor | undefined;
 
   public constructor(context: RenderContext, { cache, width, height }: PaneRenderableOptions) {
     super(context, { width, height });
@@ -97,12 +106,11 @@ export class PaneRenderable extends FrameBufferRenderable {
 
   private drawPending(): void {
     const cursor = this.cache.cursor();
-    const cursorRow = cursor?.visible === true ? cursor.y : undefined;
 
-    if (cursorRow !== this.cursorRow) {
-      this.pending.add(this.cursorRow ?? -1);
-      this.pending.add(cursorRow ?? -1);
-      this.cursorRow = cursorRow;
+    if (!sameCursor(cursor, this.drawnCursor)) {
+      this.pending.add(this.drawnCursor?.y ?? -1);
+      this.pending.add(cursor?.y ?? -1);
+      this.drawnCursor = cursor === undefined ? undefined : { ...cursor };
     }
 
     for (const index of this.pending) {
