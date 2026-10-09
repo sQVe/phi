@@ -9,6 +9,8 @@ import {
 import type { BuildVersion, ControlMessage } from '../protocol/protocol.ts';
 
 export { connectAttach } from './attach.ts';
+export { createRowCache } from './rowCache.ts';
+export type { RowCache } from './rowCache.ts';
 
 type StopResult = { ok: true; close: () => void } | { ok: false; reason: 'noServer' };
 

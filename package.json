@@ -27,6 +27,7 @@
     "release:github": "bunx --bun changeset tag"
   },
   "dependencies": {
+    "@opentui/core": "0.5.17",
     "zod": "4.6.5"
   },
   "devDependencies": {
