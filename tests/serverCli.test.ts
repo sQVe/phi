@@ -295,7 +295,7 @@ const connectTerminal = async (socketPath: string) => {
   const hello = encodeControl({
     type: 'hello',
     version: buildVersion(),
-    size: { columns: 80, rows: 24 },
+    size: { columns: 80, rows: 25 },
   });
 
   socket.write(encodeFrame(FrameKind.control, hello));

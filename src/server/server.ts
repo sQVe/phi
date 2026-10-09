@@ -1,7 +1,8 @@
 import { rmSync } from 'node:fs';
 
-import type { PaneId } from '../ids.ts';
+import type { ClientId, PaneId } from '../ids.ts';
 import { invariant } from '../invariant.ts';
+import type { TerminalSize } from '../layout.ts';
 import { FrameKind } from '../protocol/protocol.ts';
 import type { BuildVersion, ControlMessage } from '../protocol/protocol.ts';
 import { encodeRowUpdate, rowsToText } from '../rows/rows.ts';
@@ -65,6 +66,8 @@ interface Runtime {
   panes: Map<PaneId, PaneRuntime>;
   rowPublishers: Map<PaneId, { publisher: RowPublisher; pending: boolean }>;
   connections: Map<number, Connection>;
+  // The client a terminal connection's sized hello attached.
+  clientIds: Map<Connection, ClientId>;
   listener: Listener | undefined;
   nextConnectionId: number;
 }
@@ -340,10 +343,37 @@ const stopServer = (context: ServerContext): void => {
     });
 };
 
+const resizePane = (context: ServerContext, id: PaneId, size: TerminalSize): void => {
+  const pane = context.runtime.panes.get(id);
+  const publication = context.runtime.rowPublishers.get(id);
+
+  if (pane === undefined || publication === undefined) {
+    return;
+  }
+
+  try {
+    pane.resize(size);
+    publication.publisher.resize(size);
+  } catch (error) {
+    context.options.log.error('Resizing the pane failed.', {
+      paneId: id,
+      error: describeError(error),
+    });
+
+    return;
+  }
+
+  scheduleRows(context, id, pane.generation);
+};
+
 const runEffects = (context: ServerContext, changes: readonly Change[], report: Report): void => {
   for (const change of changes) {
     if (change.type === 'paneAdded') {
       startPane(context, change.pane, report);
+    }
+
+    if (change.type === 'paneResized') {
+      resizePane(context, change.paneId, change.size);
     }
 
     if (change.type === 'serverStopping') {
@@ -381,7 +411,8 @@ const report = (context: ServerContext, fact: Fact): void => {
   runEffects(context, result.changes, report);
 };
 
-const dispatch = (context: ServerContext, intent: Intent): void => {
+// Returns the changes the intent made, none when the store refuses it.
+const dispatch = (context: ServerContext, intent: Intent): readonly Change[] => {
   const result = applyIntent(context.state, intent);
 
   context.state = result.state;
@@ -389,11 +420,13 @@ const dispatch = (context: ServerContext, intent: Intent): void => {
   if (result.kind === 'rejected') {
     context.options.log.warn('Refused an intent.', { intent: intent.type, reason: result.reason });
 
-    return;
+    return [];
   }
 
   publishChanges(context, result.changes);
   runEffects(context, result.changes, report);
+
+  return result.changes;
 };
 
 const findLivePane = (context: ServerContext, paneId: PaneId) => {
@@ -491,6 +524,16 @@ const handleMessage = (
     return;
   }
 
+  if (message.type === 'resize') {
+    const clientId = context.runtime.clientIds.get(connection);
+
+    if (clientId !== undefined) {
+      dispatch(context, { type: 'resizeClient', clientId, size: message.size });
+    }
+
+    return;
+  }
+
   if (message.type === 'resync') {
     connection.send({ type: 'snapshot', snapshot: snapshot(context.state) });
 
@@ -506,6 +549,19 @@ const handleMessage = (
   context.options.log.debug('Ignored a message the server does not handle yet.', {
     type: message.type,
   });
+};
+
+const attachTerminal = (
+  context: ServerContext,
+  connection: Connection,
+  size: TerminalSize,
+): void => {
+  const changes = dispatch(context, { type: 'attachClient', size });
+  const attached = changes.find((change) => change.type === 'clientAttached');
+
+  if (attached !== undefined) {
+    context.runtime.clientIds.set(connection, attached.client.id);
+  }
 };
 
 const openConnection = (context: ServerContext, socket: Bun.Socket<ConnectionData>): void => {
@@ -524,6 +580,7 @@ const openConnection = (context: ServerContext, socket: Bun.Socket<ConnectionDat
 
       if (hello.size !== undefined && !welcomed.isClosed()) {
         socket.data.unsubscribeRows = subscribeRows(context, welcomed);
+        attachTerminal(context, welcomed, hello.size);
       }
     },
     onMessage: (message, from) => {
@@ -536,7 +593,14 @@ const openConnection = (context: ServerContext, socket: Bun.Socket<ConnectionDat
 };
 
 const closeConnection = (context: ServerContext, id: number): void => {
-  context.runtime.connections.get(id)?.close();
+  const connection = context.runtime.connections.get(id);
+
+  connection?.close();
+
+  if (connection !== undefined) {
+    context.runtime.clientIds.delete(connection);
+  }
+
   context.runtime.connections.delete(id);
 };
 
@@ -635,6 +699,7 @@ export const runServer = async (options: ServerOptions): Promise<RunServerResult
       panes: new Map(),
       rowPublishers: new Map(),
       connections: new Map(),
+      clientIds: new Map(),
       listener: undefined,
       nextConnectionId: 1,
     },

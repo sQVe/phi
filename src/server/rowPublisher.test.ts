@@ -472,3 +472,32 @@ it('sends cursor and mode changes without rows and stops sending after unsubscri
 
   expect(updates).toHaveLength(2);
 });
+
+it('sends the whole screen at the new size to every subscriber after a size change', () => {
+  const terminal = terminalForTest();
+  const publisher = publisherForTest(terminal);
+  const first: RowUpdate[] = [];
+  const second: RowUpdate[] = [];
+
+  publisher.subscribe((update) => first.push(update));
+  publisher.subscribe((update) => second.push(update));
+  publisher.publish();
+  terminal.write(encoder.encode('hello'));
+  terminal.stableRows();
+  publisher.publish();
+
+  expect(lastUpdate(first).rowCount).toBe(1);
+
+  terminal.resize(60, 10);
+  publisher.resize({ columns: 60, rows: 10 });
+  terminal.stableRows();
+  publisher.publish();
+
+  for (const updates of [first, second]) {
+    const update = lastUpdate(updates);
+
+    expect(update.size).toEqual({ columns: 60, rows: 10 });
+    expect(update.rowCount).toBe(10);
+    expect(rowsOf(update).get(0)).toBe('hello');
+  }
+});

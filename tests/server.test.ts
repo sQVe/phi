@@ -650,8 +650,8 @@ it('publishes ordered rows to terminal clients but not CLI clients', async () =>
   applyRows(rows, first);
 
   expect(first.pane).toBe(1);
-  expect(first.size).toEqual({ columns: 80, rows: 24 });
-  expect(first.rowCount).toBe(24);
+  expect(first.size).toEqual({ columns: 100, rows: 29 });
+  expect(first.rowCount).toBe(29);
 
   server.writeToPane('echo first-$((6 * 7))\n');
   await receiveText(terminal, rows, 'first-42');
@@ -671,6 +671,70 @@ it('publishes ordered rows to terminal clients but not CLI clients', async () =>
   await cli.nextMessage();
 
   expect(cli.updates).toEqual([]);
+});
+
+const nextPaneResize = async (client: TestClient) => {
+  for (;;) {
+    const message = await client.nextMessage();
+
+    if (message.type === 'change' && message.change.type === 'paneResized') {
+      return message.change;
+    }
+  }
+};
+
+it('resizes the pane to the client size less the status bar when a sized hello arrives', async () => {
+  const directory = await temporaryDirectory();
+  const { server, socketPath } = await startServer(directory);
+  const client = await connect(socketPath);
+
+  client.send({ type: 'hello', version: build, size: { columns: 100, rows: 30 } });
+
+  const resized = await nextPaneResize(client);
+
+  expect(resized.size).toEqual({ columns: 100, rows: 29 });
+  expect(server.snapshot().pane?.size).toEqual({ columns: 100, rows: 29 });
+
+  const update = await client.nextUpdate();
+
+  expect(update.size).toEqual({ columns: 100, rows: 29 });
+});
+
+it('resizes the pane when an attached client sends resize', async () => {
+  const directory = await temporaryDirectory();
+  const { socketPath } = await startServer(directory);
+  const client = await connect(socketPath);
+
+  client.send({ type: 'hello', version: build, size: { columns: 100, rows: 30 } });
+  await nextPaneResize(client);
+  client.send({ type: 'resize', size: { columns: 90, rows: 20 } });
+
+  const resized = await nextPaneResize(client);
+
+  expect(resized.size).toEqual({ columns: 90, rows: 19 });
+
+  await waitFor(() => client.updates.some((update) => update.size.columns === 90));
+
+  const latest = client.updates.at(-1);
+
+  expect(latest?.size).toEqual({ columns: 90, rows: 19 });
+});
+
+it('ignores resize from a connection without a client', async () => {
+  const directory = await temporaryDirectory();
+  const { server, socketPath } = await startServer(directory);
+  const cli = await connect(socketPath);
+
+  cli.send({ type: 'hello', version: build, size: undefined });
+  await cli.nextMessage();
+  await cli.nextMessage();
+  cli.send({ type: 'resize', size: { columns: 90, rows: 20 } });
+  cli.send({ type: 'resync' });
+
+  const answer = await cli.nextMessage();
+
+  expect(answer).toMatchObject({ type: 'snapshot' });
+  expect(server.snapshot().pane?.size).toEqual({ columns: 80, rows: 24 });
 });
 
 it('publishes every changed row when range reads run between pane writes', async () => {

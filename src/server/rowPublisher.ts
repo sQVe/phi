@@ -7,6 +7,8 @@ import type { Frame, RowRange, StableRows, Terminal } from '../vt/vt.ts';
 export interface RowPublisher {
   subscribe: (send: (update: RowUpdate) => void) => () => void;
   publish: () => void;
+  // Later updates use the size, and every subscriber gets the full screen again.
+  resize: (size: TerminalSize) => void;
   whenReleased: () => Promise<void>;
   [Symbol.dispose]: () => void;
 }
@@ -203,9 +205,10 @@ const clearInvalidTracking = (
 export const createRowPublisher = (
   terminal: Terminal,
   pane: number,
-  size: TerminalSize,
+  initialSize: TerminalSize,
   options: PublisherOptions,
 ): RowPublisher => {
+  let size = initialSize;
   const subscribers = new Set<Subscriber>();
   let previous: StableRows | undefined;
   let sequence = 0;
@@ -322,6 +325,15 @@ export const createRowPublisher = (
     }
   };
 
+  const resize = (next: TerminalSize): void => {
+    size = next;
+
+    for (const subscriber of subscribers) {
+      subscriber.primarySent.clear();
+      subscriber.alternateSent.clear();
+    }
+  };
+
   const dispose = (): void => {
     disposed = true;
     clearHold();
@@ -329,5 +341,5 @@ export const createRowPublisher = (
     subscribers.clear();
   };
 
-  return { subscribe, publish, whenReleased, [Symbol.dispose]: dispose };
+  return { subscribe, publish, resize, whenReleased, [Symbol.dispose]: dispose };
 };
