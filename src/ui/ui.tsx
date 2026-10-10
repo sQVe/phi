@@ -3,8 +3,10 @@ import type { BoxRenderable, CliRenderer } from '@opentui/core';
 import { createRoot } from '@opentui/react';
 
 import type { AttachSession, CloseReason } from '../client/client.ts';
+import { createInputRouter } from './input.ts';
 import { PaneRenderable } from './paneRenderable.ts';
 import { StatusBar } from './statusBar.tsx';
+import { takeStdin } from './stdinInput.ts';
 import { themeFromDetectedColors } from './terminalTheme.ts';
 
 const mountPane = (session: AttachSession, renderer: CliRenderer, box: BoxRenderable) => {
@@ -62,8 +64,44 @@ const reportTheme = async (session: AttachSession, renderer: CliRenderer): Promi
   }
 };
 
+const paneModes = (session: AttachSession): number => {
+  const current = session.getState().snapshot.pane;
+
+  return current === undefined ? 0 : (session.rowCache(current.id)?.modes() ?? 0);
+};
+
+const sendToPane = (session: AttachSession, bytes: Uint8Array): void => {
+  const current = session.getState().snapshot.pane;
+
+  if (current !== undefined && bytes.length > 0) {
+    session.sendInput(current.id, bytes);
+  }
+};
+
+const routeInput = (session: AttachSession) =>
+  createInputRouter({
+    mode: () => session.getState().inputMode,
+    setMode: (mode) => {
+      session.setInputMode(mode);
+    },
+    modes: () => paneModes(session),
+    send: (bytes) => {
+      sendToPane(session, bytes);
+    },
+  });
+
 export const runAttach = async (session: AttachSession): Promise<CloseReason> => {
-  const renderer = await createCliRenderer({ exitOnCtrlC: false, exitSignals: [] });
+  // OpenTUI turns on Kitty key reporting for a null setting too. With every flag off, the terminal
+  // sends the legacy key bytes the pane expects.
+  const renderer = await createCliRenderer({
+    exitOnCtrlC: false,
+    exitSignals: [],
+    useKittyKeyboard: { disambiguate: false, alternateKeys: false },
+    useMouse: false,
+  });
+
+  const releaseStdin = takeStdin(renderer, routeInput(session));
+
   const root = createRoot(renderer);
   const signals = ['SIGTERM', 'SIGINT', 'SIGHUP'] as const;
   let unmountPane: (() => void) | undefined;
@@ -110,6 +148,7 @@ export const runAttach = async (session: AttachSession): Promise<CloseReason> =>
     }
 
     renderer.off('resize', resize);
+    releaseStdin();
     unmountPane?.();
     root.unmount();
     renderer.destroy();

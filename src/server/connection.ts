@@ -24,6 +24,8 @@ interface ConnectionOptions {
   onWelcome: (connection: Connection, hello: Extract<ControlMessage, { type: 'hello' }>) => void;
   // Gets each control message after the handshake, and a stop that comes in place of hello.
   onMessage: (message: ControlMessage, connection: Connection) => void;
+  // Gets the payload of each input frame after the handshake.
+  onInput: (payload: Uint8Array, connection: Connection) => void;
 }
 
 export interface Connection {
@@ -139,12 +141,20 @@ export const createConnection = (options: ConnectionOptions): Connection => {
   };
 
   const handleFrame = (kind: FrameKind, payload: Uint8Array): void => {
+    if (!welcomed && kind !== FrameKind.control) {
+      refuseStart({ kind });
+
+      return;
+    }
+
+    if (kind === FrameKind.input) {
+      options.onInput(payload, connection);
+
+      return;
+    }
+
     if (kind !== FrameKind.control) {
-      if (welcomed) {
-        log.debug('Ignored a frame the server does not handle yet.', { kind });
-      } else {
-        refuseStart({ kind });
-      }
+      log.debug('Ignored a frame the server does not handle yet.', { kind });
 
       return;
     }

@@ -6,10 +6,11 @@ import {
   encodeControl,
   encodeFrame,
   FrameKind,
+  maxFramePayloadBytes,
   parseControl,
 } from '../protocol/protocol.ts';
 import type { BuildVersion, ControlMessage } from '../protocol/protocol.ts';
-import { decodeRowUpdate } from '../rows/rows.ts';
+import { decodeRowUpdate, encodePaneInput } from '../rows/rows.ts';
 import { createRowCache } from './rowCache.ts';
 import type { RowCache } from './rowCache.ts';
 import { applyChange } from './snapshot.ts';
@@ -20,9 +21,11 @@ interface TerminalSize {
   rows: number;
 }
 
+export type InputMode = 'insert' | 'normal';
+
 interface AttachState {
   snapshot: StoreSnapshot;
-  inputMode: 'normal';
+  inputMode: InputMode;
 }
 
 export type CloseReason = 'serverClosed' | 'connectionFailed' | 'requested';
@@ -46,6 +49,7 @@ export interface TerminalTheme {
 export interface AttachSession {
   subscribe: (listener: () => void) => () => void;
   getState: () => AttachState;
+  setInputMode: (mode: InputMode) => void;
   subscribeRows: (listener: (changed: RowsChanged) => void) => () => void;
   rowCache: (pane: PaneId) => RowCache | undefined;
   // The sequence of the newest row update applied to the pane's cache, drawn or not.
@@ -55,6 +59,7 @@ export interface AttachSession {
   setTheme: (theme: TerminalTheme) => void;
   // Tells the server the client has drawn every row update up to this sequence.
   acknowledge: (sequence: number) => void;
+  sendInput: (pane: PaneId, bytes: Uint8Array) => void;
   close: () => void;
   closed: Promise<CloseReason>;
 }
@@ -67,6 +72,11 @@ export type AttachResult =
 const rowCacheLimit = 10_000;
 
 const handshakeTimeoutMs = 10_000;
+
+// An input payload starts with the pane number as one 32-bit word.
+const paneNumberBytes = 4;
+
+const inputBytesPerFrame = maxFramePayloadBytes - paneNumberBytes;
 
 export const connectAttach = async (
   socketPath: string,
@@ -97,14 +107,17 @@ export const connectAttach = async (
     pending = pending.subarray(Math.max(written, 0));
   };
 
-  const send = (message: ControlMessage): void => {
-    const frame = encodeFrame(FrameKind.control, encodeControl(message));
+  const enqueue = (frame: Uint8Array): void => {
     const queued = new Uint8Array(pending.length + frame.length);
 
     queued.set(pending);
     queued.set(frame, pending.length);
     pending = queued;
     drain();
+  };
+
+  const send = (message: ControlMessage): void => {
+    enqueue(encodeFrame(FrameKind.control, encodeControl(message)));
   };
 
   const end = (reason: CloseReason): void => {
@@ -128,7 +141,7 @@ export const connectAttach = async (
 
   const takeSnapshot = (snapshot: StoreSnapshot): void => {
     waitingForSnapshot = false;
-    setState({ snapshot, inputMode: 'normal' });
+    setState({ snapshot, inputMode: state?.inputMode ?? 'insert' });
   };
 
   const takeChange = (revision: number, change: StoreChange): void => {
@@ -263,6 +276,13 @@ export const connectAttach = async (
 
       return state;
     },
+    setInputMode: (mode) => {
+      invariant(state !== undefined, 'The attach session is only handed out after a snapshot.');
+
+      if (state.inputMode !== mode) {
+        setState({ ...state, inputMode: mode });
+      }
+    },
     subscribeRows: (listener) => {
       rowListeners.add(listener);
 
@@ -281,6 +301,15 @@ export const connectAttach = async (
     acknowledge: (sequence) => {
       if (!ended) {
         send({ type: 'ack', sequence });
+      }
+    },
+    sendInput: (pane, bytes) => {
+      const number = Number(pane.slice('pane-'.length));
+
+      for (let start = 0; start < bytes.length; start += inputBytesPerFrame) {
+        const part = bytes.subarray(start, start + inputBytesPerFrame);
+
+        enqueue(encodeFrame(FrameKind.input, encodePaneInput({ pane: number, bytes: part })));
       }
     },
     close: () => {

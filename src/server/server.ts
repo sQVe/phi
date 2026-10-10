@@ -1,11 +1,12 @@
 import { rmSync } from 'node:fs';
 
+import { paneId as paneIdFor } from '../ids.ts';
 import type { ClientId, PaneId } from '../ids.ts';
 import { invariant } from '../invariant.ts';
 import type { TerminalSize } from '../layout.ts';
 import { FrameKind } from '../protocol/protocol.ts';
 import type { BuildVersion, ControlMessage } from '../protocol/protocol.ts';
-import { encodeRowUpdate, rowsToText } from '../rows/rows.ts';
+import { decodePaneInput, encodeRowUpdate, rowsToText } from '../rows/rows.ts';
 import { applyFact, applyIntent, createState, paneTheme, snapshot } from '../store/store.ts';
 import type { Change, Fact, Intent, Pane, Snapshot, State } from '../store/store.ts';
 import { createConnection } from './connection.ts';
@@ -610,6 +611,31 @@ const handleMessage = (
   });
 };
 
+const handleInput = (context: ServerContext, payload: Uint8Array, connection: Connection): void => {
+  const { log } = context.options;
+  const decoded = decodePaneInput(payload);
+
+  if (!decoded.ok) {
+    log.warn('Closed a connection that sent invalid input.', { reason: decoded.reason });
+    connection.close();
+
+    return;
+  }
+
+  const target = paneIdFor(decoded.input.pane);
+  const clientId = context.runtime.clientIds.get(connection);
+  const isAttached = clientId !== undefined && clientId === context.state.attachedClientId;
+  const live = findLivePane(context, target);
+
+  if (!isAttached || live === undefined) {
+    log.debug('Ignored input from a client that cannot write to the pane.', { paneId: target });
+
+    return;
+  }
+
+  live.runtime.write(decoded.input.bytes);
+};
+
 const attachTerminal = (
   context: ServerContext,
   connection: Connection,
@@ -647,6 +673,9 @@ const openConnection = (context: ServerContext, socket: Bun.Socket<ConnectionDat
     },
     onMessage: (message, from) => {
       handleMessage(context, message, from);
+    },
+    onInput: (payload, from) => {
+      handleInput(context, payload, from);
     },
   });
 
