@@ -261,15 +261,16 @@ const assertRowUpdate = (update: RowUpdate) => {
   );
 };
 
+const rowUpdateWords = (update: RowUpdate): number =>
+  headerWords + update.colors.length + update.cells.length + update.graphemes.length;
+
 export const rowUpdateBytes = (update: RowUpdate): number =>
-  (headerWords + update.cells.length + update.graphemes.length) * Uint32Array.BYTES_PER_ELEMENT;
+  rowUpdateWords(update) * Uint32Array.BYTES_PER_ELEMENT;
 
 export const encodeRowUpdate = (update: RowUpdate): Uint8Array => {
   assertRowUpdate(update);
 
-  const words = new Uint32Array(
-    headerWords + update.colors.length + update.cells.length + update.graphemes.length,
-  );
+  const words = new Uint32Array(rowUpdateWords(update));
 
   words[header.pane] = update.pane;
   words[header.sequence] = update.sequence;

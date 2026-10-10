@@ -10,6 +10,7 @@ import {
   encodeRowUpdate,
   ModeFlag,
   rowsToText,
+  rowUpdateBytes,
 } from './rows.ts';
 import type { RowUpdate } from './rows.ts';
 
@@ -95,6 +96,12 @@ it('round-trips colors beside rows and clusters', () => {
   });
 
   expect(roundTrip(update)).toEqual({ ok: true, update });
+});
+
+it('counts the colors in the byte size of an encoded update', () => {
+  const update = rowUpdate({ colors: Uint32Array.of(1, 0x1_12_34_56, 257, 0x1_00_00_00) });
+
+  expect(rowUpdateBytes(update)).toBe(encodeRowUpdate(update).length);
 });
 
 it.each([
