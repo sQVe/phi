@@ -1,9 +1,10 @@
 Make a full reset (RIS) clear the foreground, background, and cursor colors a program set with
 OSC 10, 11, and 12.
 
-Phi needs this because it tells clients which colors a program changed. After RIS the program
-expects the terminal's own colors, as with xterm, but upstream resets only the palette. The
-defaults the host set stay in place.
+Phi needs this because it tells clients which colors a program changed, and a client shows its own
+theme for the rest. Upstream resets only the palette on RIS, like xterm and VTE, so a client would
+keep a program's colors after a reset. tmux and Zellij clear a pane's colors on RIS, and Phi does
+the same. The defaults the host set stay in place.
 
 Upstream: no report filed yet.
 
