@@ -50,6 +50,25 @@ const stringReplyPrefixes = new Map<number, string[]>([
   [byteOf('_'), ['G']],
 ]);
 
+// A complete body, without the introducer and the terminator:
+//   OSC 10 and 11: a color value, `rgb:` and three hex groups of one to four digits.
+//   OSC 99: `99;` and printable text. OSC 1337: `Capabilities=` and printable text.
+//   DCS 1+r and 0+r: hex-encoded names, with an optional `=` and hex-encoded value.
+//   DCS >|: the terminal name and version as printable text.
+//   APC G: `Gi=` an image id, `;` and printable text.
+const stringReplyBodies = new Map<number, RegExp[]>([
+  [
+    byteOf(']'),
+    [
+      /^1[01];rgb:[0-9a-f]{1,4}\/[0-9a-f]{1,4}\/[0-9a-f]{1,4}$/i,
+      /^99;[\x20-\x7e]+$/,
+      /^1337;Capabilities=[\x20-\x7e]*$/,
+    ],
+  ],
+  [byteOf('P'), [/^[01]\+r(?:[0-9a-f]*(?:=[0-9a-f]*)?)$/i, /^>\|[\x20-\x7e]+$/]],
+  [byteOf('_'), [/^Gi=[0-9]+;[\x20-\x7e]+$/]],
+]);
+
 //   CSI ? Ps ; Pm $ y: DECRQM replies. CSI ? flags u: the Kitty keyboard flags reply.
 //   CSI ? ... c: the device attributes reply. CSI 4 ; h ; w t: the pixel size reply.
 //   CSI row ; col R: the cursor position report. It looks like Shift+F3 (ESC[1;2R) when the row
@@ -161,36 +180,48 @@ const matchesReplyPrefix = (introducer: number, body: string): boolean =>
     (prefix) => prefix.startsWith(body) || body.startsWith(prefix),
   );
 
+const isCompleteReply = (introducer: number, body: string): boolean =>
+  (stringReplyBodies.get(introducer) ?? []).some((shape) => shape.test(body));
+
+// The end of the string terminator at index, or undefined when there is none.
+const terminatorEnd = (input: Uint8Array, index: number): number | undefined => {
+  if (input[index] === bell) {
+    return index + 1;
+  }
+
+  return input[index] === escape && input[index + 1] === backslash ? index + 2 : undefined;
+};
+
 const scanStringSequence = (input: Uint8Array, start: number): Scanned | undefined => {
   const introducer = input[start + 1] ?? 0;
   const notReply: Scanned = { kind: 'key', end: start + 2 };
+  const decoder = new TextDecoder();
 
   for (let index = start + 2; index < input.length; index += 1) {
-    const byte = input[index];
-    const body = new TextDecoder().decode(input.subarray(start + 2, index));
-    const stillReply = matchesReplyPrefix(introducer, body);
-    const tooLong = index - start - 2 > maxReplyBodyBytes;
+    const body = decoder.decode(input.subarray(start + 2, index));
 
-    if (!stillReply || tooLong) {
+    const keepsWaiting =
+      matchesReplyPrefix(introducer, body) && index - start - 2 <= maxReplyBodyBytes;
+
+    if (!keepsWaiting) {
       return notReply;
     }
 
-    if (byte === bell) {
-      return { kind: 'response', end: index + 1 };
+    const end = terminatorEnd(input, index);
+
+    if (end !== undefined) {
+      return isCompleteReply(introducer, body) ? { kind: 'response', end } : notReply;
     }
 
-    if (byte === escape && index + 1 >= input.length) {
-      return undefined;
-    }
-
-    if (byte === escape) {
-      return input[index + 1] === backslash ? { kind: 'response', end: index + 2 } : notReply;
+    if (input[index] === escape) {
+      return index + 1 >= input.length ? undefined : notReply;
     }
   }
 
-  const unfinished = new TextDecoder().decode(input.subarray(start + 2));
+  const unfinished = decoder.decode(input.subarray(start + 2));
+  const fits = input.length - start - 2 <= maxReplyBodyBytes;
 
-  return matchesReplyPrefix(introducer, unfinished) ? undefined : notReply;
+  return fits && matchesReplyPrefix(introducer, unfinished) ? undefined : notReply;
 };
 
 const classifyCsi = (

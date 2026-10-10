@@ -370,3 +370,20 @@ it('emits an unfinished paste when a read arrives after the window', () => {
 
   expect(read('x', 2000)).toEqual(['paste:hi', 'key:x']);
 });
+
+it('releases a terminated string body that is not a complete reply', () => {
+  const { read } = setup();
+
+  expect(read('\x1b]\x07')).toEqual(['key:\x1b]', 'key:\x07']);
+  expect(read('\x1b]1\x07')).toEqual(['key:\x1b]', 'key:1', 'key:\x07']);
+  expect(read('\x1b]11;not-a-color\x07').slice(0, 2)).toEqual(['key:\x1b]', 'key:1']);
+  expect(read('\x1b_Garbage\x1b\\').slice(0, 2)).toEqual(['key:\x1b_', 'key:G']);
+});
+
+it('releases an unfinished reply body once it is over the length limit', () => {
+  const { read, holding } = setup();
+
+  expect(read('\x1b]11;')).toEqual([]);
+  expect(read('a'.repeat(510))).not.toEqual([]);
+  expect(holding()).toBe(false);
+});
