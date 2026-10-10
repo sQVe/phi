@@ -179,3 +179,14 @@ it('sends an application arrow delivered in three reads as one key', async () =>
   await attached.until(() => attached.receivedText().length >= 3);
   expect(attached.receivedText()).toBe('\x1bOA');
 });
+
+it('keeps palette color replies out of the pane when the terminal has no truecolor', async () => {
+  const attached = await setupAttach(0, { truecolor: false });
+
+  await attached.until(() => attached.statusBar() === 'INSERT');
+  await attached.until(() => attached.repliesText().includes('\x1b]4;15;'));
+  attached.type('x');
+  await attached.until(() => attached.receivedText().endsWith('x'));
+
+  expect(attached.receivedText()).toBe('x');
+});

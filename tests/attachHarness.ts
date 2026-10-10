@@ -21,6 +21,14 @@ export interface AttachHarness {
   receivedBytes: () => Buffer;
   receivedText: () => string;
   until: (condition: () => boolean) => Promise<undefined>;
+  // What the outer terminal answered the client's queries, such as its palette colors.
+  repliesText: () => string;
+}
+
+interface AttachOptions {
+  // OpenTUI asks for the palette only without truecolor, so the default keeps its replies out of
+  // tests that time their reads.
+  truecolor?: boolean;
 }
 
 const pane = {
@@ -57,7 +65,10 @@ const paneRows = (modes: number) => {
   );
 };
 
-export const setupAttach = async (modes: number): Promise<AttachHarness> => {
+export const setupAttach = async (
+  modes: number,
+  options: AttachOptions = {},
+): Promise<AttachHarness> => {
   const directory = await mkdtemp(join(tmpdir(), 'phi-attach-input-'));
   const socketPath = join(directory, 'phi.sock');
   const decoder = createFrameDecoder();
@@ -122,20 +133,24 @@ export const setupAttach = async (modes: number): Promise<AttachHarness> => {
   }
 
   const screen = result.terminal;
+  const replies: Uint8Array[] = [];
+  const { COLORTERM: _colorTerm, ...environment } = process.env;
+  const colorTerm = options.truecolor === false ? {} : { COLORTERM: 'truecolor' };
 
   const client = Bun.spawn([process.execPath, 'src/index.ts', 'attach', '--socket', socketPath], {
-    env: { ...process.env, TERM: 'xterm-256color' },
+    env: { ...environment, ...colorTerm, TERM: 'xterm-256color' },
     terminal: {
       cols: 80,
       rows: 24,
       data: (terminal, bytes) => {
         const reply = screen.write(bytes);
 
-        changed();
-
         if (reply !== undefined) {
+          replies.push(reply);
           terminal.write(reply);
         }
+
+        changed();
       },
     },
   });
@@ -186,5 +201,7 @@ export const setupAttach = async (modes: number): Promise<AttachHarness> => {
 
   const receivedText = () => receivedBytes().toString();
 
-  return { statusBar, type, receivedBytes, receivedText, until };
+  const repliesText = () => Buffer.concat(replies).toString();
+
+  return { statusBar, type, receivedBytes, receivedText, until, repliesText };
 };
