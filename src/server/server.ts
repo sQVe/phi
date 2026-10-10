@@ -14,7 +14,7 @@ import type { Log } from './log.ts';
 import { spawnPane } from './pane.ts';
 import type { PaneRuntime } from './pane.ts';
 import { createRowPublisher } from './rowPublisher.ts';
-import type { RowPublisher } from './rowPublisher.ts';
+import type { RowPublisher, RowSubscription } from './rowPublisher.ts';
 import { claimSocketPath } from './socketPath.ts';
 
 export { createLog, logPathFor } from './log.ts';
@@ -59,6 +59,11 @@ interface ConnectionData {
   unsubscribeRows: () => void;
 }
 
+interface RowSubscriptions {
+  acknowledge: (sequence: number) => boolean;
+  unsubscribe: () => void;
+}
+
 type Listener = Bun.UnixSocketListener<ConnectionData>;
 
 // PTYs, parsers, and sockets. The store holds none of them.
@@ -68,6 +73,8 @@ interface Runtime {
   connections: Map<number, Connection>;
   // The client a terminal connection's sized hello attached.
   clientIds: Map<Connection, ClientId>;
+  // Records an ack on each pane subscription of a terminal connection. True if one took it.
+  rowAcknowledgers: Map<Connection, (sequence: number) => boolean>;
   listener: Listener | undefined;
   nextConnectionId: number;
 }
@@ -139,11 +146,11 @@ const scheduleRows = (context: ServerContext, id: PaneId, generation: number): v
   });
 };
 
-const subscribeRows = (context: ServerContext, connection: Connection): (() => void) => {
-  const subscriptions: (() => void)[] = [];
+const subscribeRows = (context: ServerContext, connection: Connection): RowSubscriptions => {
+  const subscriptions: RowSubscription[] = [];
 
   for (const [id, publication] of context.runtime.rowPublishers) {
-    const unsubscribe = publication.publisher.subscribe((update) => {
+    const subscription = publication.publisher.subscribe((update) => {
       if (connection.isClosed()) {
         return;
       }
@@ -158,18 +165,26 @@ const subscribeRows = (context: ServerContext, connection: Connection): (() => v
 
     const pane = context.runtime.panes.get(id);
 
-    subscriptions.push(unsubscribe);
+    subscriptions.push(subscription);
 
     if (pane !== undefined) {
       scheduleRows(context, id, pane.generation);
     }
   }
 
-  return () => {
-    for (const unsubscribe of subscriptions) {
-      unsubscribe();
+  const acknowledge = (sequence: number): boolean => {
+    const accepted = subscriptions.map((subscription) => subscription.acknowledge(sequence));
+
+    return accepted.includes(true);
+  };
+
+  const unsubscribe = (): void => {
+    for (const subscription of subscriptions) {
+      subscription.unsubscribe();
     }
   };
+
+  return { acknowledge, unsubscribe };
 };
 
 const startPane = (context: ServerContext, pane: Pane, report: Report): void => {
@@ -540,6 +555,18 @@ const handleMessage = (
     return;
   }
 
+  if (message.type === 'ack') {
+    const accepted = context.runtime.rowAcknowledgers.get(connection)?.(message.sequence);
+
+    if (accepted !== true) {
+      context.options.log.debug('Ignored an ack for a sequence the client was not sent.', {
+        sequence: message.sequence,
+      });
+    }
+
+    return;
+  }
+
   if (message.type === 'paneRead' || message.type === 'paneSend') {
     handlePaneCommand(context, message, connection);
 
@@ -579,7 +606,10 @@ const openConnection = (context: ServerContext, socket: Bun.Socket<ConnectionDat
       welcomed.send({ type: 'snapshot', snapshot: snapshot(context.state) });
 
       if (hello.size !== undefined && !welcomed.isClosed()) {
-        socket.data.unsubscribeRows = subscribeRows(context, welcomed);
+        const rows = subscribeRows(context, welcomed);
+
+        socket.data.unsubscribeRows = rows.unsubscribe;
+        runtime.rowAcknowledgers.set(welcomed, rows.acknowledge);
         attachTerminal(context, welcomed, hello.size);
       }
     },
@@ -603,6 +633,7 @@ const closeConnection = (context: ServerContext, id: number): void => {
 
   context.runtime.connections.delete(id);
   context.runtime.clientIds.delete(connection);
+  context.runtime.rowAcknowledgers.delete(connection);
   connection.close();
 
   if (clientId !== undefined) {
@@ -711,6 +742,7 @@ export const runServer = async (options: ServerOptions): Promise<RunServerResult
       rowPublishers: new Map(),
       connections: new Map(),
       clientIds: new Map(),
+      rowAcknowledgers: new Map(),
       listener: undefined,
       nextConnectionId: 1,
     },

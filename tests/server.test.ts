@@ -1,4 +1,4 @@
-import { expect, it, onTestFinished, spyOn } from 'bun:test';
+import { expect, it, jest, onTestFinished, spyOn } from 'bun:test';
 import { once } from 'node:events';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, rename, rm, symlink } from 'node:fs/promises';
@@ -1057,6 +1057,206 @@ it('closes a connection that never reads once its queue is full, and keeps parsi
 
   socket.resume();
   await closed.promise;
+});
+
+const sizedHello: ControlMessage = {
+  type: 'hello',
+  version: build,
+  size: { columns: 100, rows: 30 },
+};
+
+const nextPaneRows = async (client: TestClient): Promise<string[]> => {
+  for (;;) {
+    const message = await client.nextMessage();
+
+    if (message.type === 'paneRows') {
+      return message.rows;
+    }
+  }
+};
+
+// Every row update the server sent before this call has arrived when it returns.
+const roundTrip = async (client: TestClient): Promise<string[]> => {
+  client.send({ type: 'paneRead', paneId: paneId(1) });
+
+  return nextPaneRows(client);
+};
+
+const hasText = (rows: Map<number, string>, text: string): boolean =>
+  [...rows.values()].some((row) => row.includes(text));
+
+const inFlightLimit = 8;
+
+// Prints one line at a time until the client has all the updates the server will send it.
+const startPacedClient = async (server: Server, socketPath: string) => {
+  const client = await connect(socketPath);
+
+  client.send(sizedHello);
+  await waitFor(() => client.updates.length > 0);
+
+  for (let step = 0; client.updates.length < inFlightLimit; step += 1) {
+    const marker = `step-${step}`;
+
+    server.writeToPane(`echo ${marker}\n`);
+    await waitFor(() => server.paneText()?.includes(marker) === true);
+    await roundTrip(client);
+  }
+
+  return client;
+};
+
+it('stops sending rows to a client that never acks while the pane keeps parsing', async () => {
+  const directory = await temporaryDirectory();
+  const { server, socketPath } = await startServer(directory);
+  const client = await startPacedClient(server, socketPath);
+  const sentBefore = client.updates.length;
+
+  expect(sentBefore).toBe(inFlightLimit);
+
+  server.writeToPane('echo after-limit-$((6 * 7))\n');
+  await waitFor(() => server.paneText()?.includes('after-limit-42') === true);
+  await roundTrip(client);
+
+  expect(client.updates).toHaveLength(sentBefore);
+
+  const read = await roundTrip(client);
+
+  expect(read.join('\n')).toContain('after-limit-42');
+});
+
+it('sends the newest screen after the client acks', async () => {
+  const directory = await temporaryDirectory();
+  const { server, socketPath } = await startServer(directory);
+  const client = await startPacedClient(server, socketPath);
+  const sentBefore = client.updates.length;
+
+  server.writeToPane('echo after-limit-$((6 * 7))\n');
+  await waitFor(() => server.paneText()?.includes('after-limit-42') === true);
+
+  client.send({ type: 'ack', sequence: client.updates.at(-1)?.sequence ?? 0 });
+  await waitFor(() => client.updates.length > sentBefore);
+
+  const rows = new Map<number, string>();
+
+  for (const update of client.updates) {
+    applyRows(rows, update);
+  }
+
+  const expected = await roundTrip(client);
+  const last = client.updates.at(-1);
+
+  if (last === undefined) {
+    throw new Error('No row update arrived.');
+  }
+
+  const cached = expected.map((_, index) => rows.get(last.activeTop + index) ?? '');
+
+  expect(cached).toEqual(expected.map((row) => row.trimEnd()));
+});
+
+it('ignores an ack for a sequence the client was never sent', async () => {
+  const directory = await temporaryDirectory();
+  const { server, socketPath } = await startServer(directory);
+  const client = await startPacedClient(server, socketPath);
+  const sentBefore = client.updates.length;
+
+  client.send({ type: 'ack', sequence: (client.updates.at(-1)?.sequence ?? 0) + 1000 });
+  await roundTrip(client);
+
+  expect(client.updates).toHaveLength(sentBefore);
+});
+
+it('keeps a connection open when output outruns a client that does not read or ack', async () => {
+  const directory = await temporaryDirectory();
+  const { server, socketPath, logPath } = await startServer(directory);
+  const socket = createConnection(socketPath);
+  let closed = false;
+
+  socket.once('close', () => {
+    closed = true;
+  });
+
+  socket.on('error', () => undefined);
+
+  onTestFinished(() => {
+    socket.destroy();
+  });
+
+  await once(socket, 'connect');
+  socket.pause();
+  socket.write(encodeFrame(FrameKind.control, encodeControl(sizedHello)));
+
+  server.writeToPane('seq 1 200000; echo burst-$((6 * 7))\n');
+  await waitFor(() => server.paneText()?.includes('burst-42') === true, 20_000);
+
+  expect(hasQueueWarning(logPath)).toBe(false);
+  expect(closed).toBe(false);
+});
+
+it('keeps a connection open when full-screen repaints of a large terminal outrun a client that does not read or ack', async () => {
+  const directory = await temporaryDirectory();
+  const { server, socketPath, logPath } = await startServer(directory);
+  const socket = createConnection(socketPath);
+  let closed = false;
+
+  socket.once('close', () => {
+    closed = true;
+  });
+
+  socket.on('error', () => undefined);
+
+  onTestFinished(() => {
+    socket.destroy();
+  });
+
+  await once(socket, 'connect');
+  socket.pause();
+
+  const hello = { ...sizedHello, size: { columns: 240, rows: 81 } };
+
+  socket.write(encodeFrame(FrameKind.control, encodeControl(hello)));
+  await waitFor(() => server.snapshot().clients.length === 1);
+
+  server.writeToPane('stty -echo\n');
+  await Bun.sleep(30);
+
+  for (const character of 'abcdefghijklmnopqrst') {
+    const command = `printf '\\033[?2026h\\033[2J\\033[H'; printf '%19200s' '' | tr ' ' '${character}'; printf '\\033[?2026l'\n`;
+
+    server.writeToPane(command);
+    await waitFor(() => server.paneText()?.includes(character.repeat(200)) === true);
+    await Bun.sleep(60);
+  }
+
+  expect(hasQueueWarning(logPath)).toBe(false);
+  expect(closed).toBe(false);
+});
+
+it('delivers a paneSend echo to an acking client without advancing a timer', async () => {
+  const directory = await temporaryDirectory();
+  const { socketPath } = await startServer(directory);
+  const client = await connect(socketPath);
+  const rows = new Map<number, string>();
+
+  client.send(sizedHello);
+  await waitFor(() => client.updates.length > 0);
+
+  jest.useFakeTimers();
+
+  try {
+    client.send({ type: 'paneSend', paneId: paneId(1), text: 'echo echoed-$((6 * 7))\n' });
+
+    while (!hasText(rows, 'echoed-42')) {
+      const update = await client.nextUpdate();
+
+      applyRows(rows, update);
+      client.send({ type: 'ack', sequence: update.sequence });
+    }
+  } finally {
+    jest.useRealTimers();
+  }
+
+  expect(hasText(rows, 'echoed-42')).toBe(true);
 });
 
 it('ends the pane, closes connections, and removes the socket when stopping the pane fails', async () => {

@@ -15,6 +15,9 @@ import {
 import type { ControlMessage } from '../src/protocol/protocol.ts';
 import { cellWords, encodeRowUpdate } from '../src/rows/rows.ts';
 import type { RowUpdate } from '../src/rows/rows.ts';
+import { createLog } from '../src/server/log.ts';
+import { runServer } from '../src/server/server.ts';
+import { waitFor } from './serverProcesses.ts';
 
 type Reply = (Uint8Array | ControlMessage)[] | undefined;
 
@@ -301,4 +304,143 @@ it('closes with connectionFailed after a frame it cannot parse', async () => {
   const session = await attach(server);
 
   expect(await session.closed).toBe('connectionFailed');
+});
+
+it('hands the update sequence to row listeners and acks only when told to', async () => {
+  const sequences: number[] = [];
+  const arrived = Promise.withResolvers<undefined>();
+
+  const server = await listen((message) => {
+    if (message.type === 'hello') {
+      return [{ type: 'welcome' }, snapshotMessage(1)];
+    }
+
+    if (message.type === 'resize') {
+      return [
+        encodeFrame(FrameKind.rowUpdate, encodeRowUpdate(rowUpdate({ sequence: 1 }))),
+        encodeFrame(FrameKind.rowUpdate, encodeRowUpdate(rowUpdate({ sequence: 2 }))),
+      ];
+    }
+
+    if (message.type === 'ack') {
+      arrived.resolve(undefined);
+    }
+
+    return [];
+  });
+
+  const session = await attach(server);
+  const listened = Promise.withResolvers<undefined>();
+
+  session.subscribeRows(({ sequence }) => {
+    sequences.push(sequence);
+
+    if (sequences.length === 2) {
+      listened.resolve(undefined);
+    }
+  });
+
+  session.resize({ columns: 120, rows: 40 });
+  await listened.promise;
+
+  expect(sequences).toEqual([1, 2]);
+  expect(server.received.some((message) => message.type === 'ack')).toBe(false);
+
+  session.acknowledge(2);
+  await arrived.promise;
+
+  expect(server.received.filter((message) => message.type === 'ack')).toEqual([
+    { type: 'ack', sequence: 2 },
+  ]);
+});
+
+it('sends no ack after the session closed', async () => {
+  const server = await listen(welcomeWith(snapshotMessage(1)));
+  const session = await attach(server);
+
+  session.close();
+  await session.closed;
+  session.acknowledge(1);
+  await Bun.sleep(20);
+
+  expect(server.received.map((message) => message.type)).toEqual(['hello']);
+});
+
+it('sends no ack for a row update it cannot decode', async () => {
+  const server = await listen(
+    welcomeWith(snapshotMessage(1), encodeFrame(FrameKind.rowUpdate, new Uint8Array([1, 2, 3]))),
+  );
+
+  const session = await attach(server);
+
+  expect(await session.closed).toBe('connectionFailed');
+  expect(server.received.map((message) => message.type)).toEqual(['hello']);
+});
+
+it('keeps receiving row updates from a real server past the in-flight limit', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'phi-attach-paced-'));
+  const created = createLog(join(directory, 'state', 'server.log'), Date.now);
+
+  if (!created.ok) {
+    throw new Error(created.message);
+  }
+
+  const started = await runServer({
+    socketPath: join(directory, 'run', 'phi.sock'),
+    version,
+    log: created.log,
+    environment: { ...process.env, SHELL: '/bin/sh' },
+    directory,
+    holdLimitMs: 60_000,
+  });
+
+  if (!started.ok) {
+    throw new Error(started.message);
+  }
+
+  const { server } = started;
+
+  onTestFinished(async () => {
+    server.stop();
+    await server.stopped;
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const session = await attach({ socketPath: join(directory, 'run', 'phi.sock') });
+  let updates = 0;
+
+  session.subscribeRows(({ sequence }) => {
+    updates += 1;
+    session.acknowledge(sequence);
+  });
+
+  const printLine = async (line: number): Promise<void> => {
+    const marker = `line-${line}`;
+    const seen = updates;
+
+    server.writeToPane(`echo ${marker}\n`);
+    expect(await waitFor(() => server.paneText()?.includes(marker) === true)).toBe(true);
+    expect(await waitFor(() => updates > seen)).toBe(true);
+  };
+
+  for (let line = 0; line < 16; line += 1) {
+    await printLine(line);
+  }
+
+  expect(updates).toBeGreaterThan(8);
+});
+
+it('reports the newest sequence of row updates that arrived before any listener', async () => {
+  const server = await listen(
+    welcomeWith(
+      encodeFrame(FrameKind.rowUpdate, encodeRowUpdate(rowUpdate({ sequence: 1 }))),
+      encodeFrame(FrameKind.rowUpdate, encodeRowUpdate(rowUpdate({ sequence: 2 }))),
+      snapshotMessage(1),
+    ),
+  );
+
+  const session = await attach(server);
+
+  expect(session.newestSequence(paneId(7))).toBe(2);
+  expect(session.newestSequence(paneId(8))).toBeUndefined();
 });
