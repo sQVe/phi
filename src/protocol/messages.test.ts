@@ -36,7 +36,15 @@ const pane = {
   exitCode: undefined,
 };
 
-const client = { id: clientId(2), size: { columns: 80, rows: 24 } };
+const theme = {
+  foreground: 0x11_22_33,
+  background: 0xdd_ee_ff,
+  palette: Array.from({ length: 16 }, (_, index) => index * 0x01_01_01),
+};
+
+const client = { id: clientId(2), size: { columns: 80, rows: 24 }, theme: undefined };
+
+const themedClient = { ...client, theme };
 
 const messages: ControlMessage[] = [
   { type: 'hello', version: build, size: undefined },
@@ -45,6 +53,7 @@ const messages: ControlMessage[] = [
   { type: 'detach' },
   { type: 'stop' },
   { type: 'resize', size: { columns: 120, rows: 40 } },
+  { type: 'theme', theme },
   { type: 'ack', sequence: 7 },
   { type: 'resync' },
   {
@@ -78,6 +87,12 @@ const messages: ControlMessage[] = [
     change: { type: 'clientDetached', clientId: client.id, reason: 'takenOver' },
   },
   { type: 'change', revision: 7, change: { type: 'serverStopping' } },
+  { type: 'change', revision: 8, change: { type: 'clientAttached', client: themedClient } },
+  {
+    type: 'change',
+    revision: 9,
+    change: { type: 'clientThemeChanged', clientId: client.id, theme },
+  },
   { type: 'takenOver' },
   { type: 'paneRead', paneId: pane.id },
   { type: 'paneRows', paneId: pane.id, rows: ['$ ls', ''] },
@@ -113,6 +128,18 @@ it.each([
 
 it.each([
   ['a missing field', '{"type":"resize"}'],
+  [
+    'a theme palette with 15 colors',
+    JSON.stringify({ type: 'theme', theme: { ...theme, palette: theme.palette.slice(1) } }),
+  ],
+  [
+    'a theme palette with 17 colors',
+    JSON.stringify({ type: 'theme', theme: { ...theme, palette: [...theme.palette, 0] } }),
+  ],
+  [
+    'a theme color past 0xffffff',
+    JSON.stringify({ type: 'theme', theme: { ...theme, foreground: 0x1_00_00_00 } }),
+  ],
   ['a wrong type', '{"type":"ack","sequence":"7"}'],
   ['a fractional number', '{"type":"ack","sequence":1.5}'],
   ['an unknown type', '{"type":"shout"}'],
@@ -168,7 +195,7 @@ it('parses a snapshot into ids the store accepts', () => {
     revision: 2,
     pane: { ...pane, id: paneId(4) },
     attachedClientId: clientId(5),
-    clients: [{ id: clientId(5), size: { columns: 80, rows: 24 } }],
+    clients: [{ id: clientId(5), size: { columns: 80, rows: 24 }, theme: undefined }],
   };
 
   const message = parseMessage(encodeControl({ type: 'snapshot', snapshot: sent }));

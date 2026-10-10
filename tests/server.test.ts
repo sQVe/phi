@@ -850,6 +850,29 @@ it('resizes the pane when an attached client sends resize', async () => {
   expect(latest?.size).toEqual({ columns: 90, rows: 19 });
 });
 
+it('answers a pane color query with the background the attached client reported', async () => {
+  const directory = await temporaryDirectory();
+  const { server, socketPath } = await startServer(directory);
+  const client = await connect(socketPath);
+
+  client.send(sizedHello);
+  await waitFor(() => client.updates.length > 0);
+
+  client.send({
+    type: 'theme',
+    theme: {
+      foreground: 0x11_22_33,
+      background: 0xdd_ee_ff,
+      palette: Array.from({ length: 16 }, () => 0),
+    },
+  });
+
+  client.send({ type: 'paneSend', paneId: paneId(1), text: "printf '\\033]11;?\\033\\\\'\n" });
+
+  // The PTY echoes the terminal's reply, so the screen shows the color the query got.
+  await waitFor(() => server.paneText()?.includes('rgb:dddd/eeee/ffff') === true);
+});
+
 it('ignores resize from a connection without a client', async () => {
   const directory = await temporaryDirectory();
   const { server, socketPath } = await startServer(directory);

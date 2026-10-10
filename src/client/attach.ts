@@ -35,6 +35,14 @@ interface RowsChanged {
   sequence: number;
 }
 
+// Colors as 0xRRGGBB numbers.
+export interface TerminalTheme {
+  foreground: number;
+  background: number;
+  // Palette indexes 0-15.
+  palette: readonly number[];
+}
+
 export interface AttachSession {
   subscribe: (listener: () => void) => () => void;
   getState: () => AttachState;
@@ -43,6 +51,8 @@ export interface AttachSession {
   // The sequence of the newest row update applied to the pane's cache, drawn or not.
   newestSequence: (pane: PaneId) => number | undefined;
   resize: (size: TerminalSize) => void;
+  // Tells the server the colors of the client's terminal.
+  setTheme: (theme: TerminalTheme) => void;
   // Tells the server the client has drawn every row update up to this sequence.
   acknowledge: (sequence: number) => void;
   close: () => void;
@@ -264,6 +274,9 @@ export const connectAttach = async (
     newestSequence: (pane) => newestSequences.get(pane),
     resize: (next) => {
       send({ type: 'resize', size: next });
+    },
+    setTheme: (theme) => {
+      send({ type: 'theme', theme });
     },
     acknowledge: (sequence) => {
       if (!ended) {

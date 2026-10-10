@@ -4,7 +4,7 @@ export type StoreSnapshot = Extract<ControlMessage, { type: 'snapshot' }>['snaps
 
 export type StoreChange = Extract<ControlMessage, { type: 'change' }>['change'];
 
-export const applyChange = (snapshot: StoreSnapshot, change: StoreChange): StoreSnapshot => {
+const applyPaneChange = (snapshot: StoreSnapshot, change: StoreChange): StoreSnapshot => {
   const { pane } = snapshot;
 
   if (change.type === 'paneAdded') {
@@ -21,6 +21,10 @@ export const applyChange = (snapshot: StoreSnapshot, change: StoreChange): Store
     return { ...snapshot, pane: { ...pane, size: change.size } };
   }
 
+  return snapshot;
+};
+
+const applyClientChange = (snapshot: StoreSnapshot, change: StoreChange): StoreSnapshot => {
   if (change.type === 'clientAttached') {
     return {
       ...snapshot,
@@ -32,6 +36,14 @@ export const applyChange = (snapshot: StoreSnapshot, change: StoreChange): Store
   if (change.type === 'clientResized') {
     const clients = snapshot.clients.map((client) =>
       client.id === change.clientId ? { ...client, size: change.size } : client,
+    );
+
+    return { ...snapshot, clients };
+  }
+
+  if (change.type === 'clientThemeChanged') {
+    const clients = snapshot.clients.map((client) =>
+      client.id === change.clientId ? { ...client, theme: change.theme } : client,
     );
 
     return { ...snapshot, clients };
@@ -49,3 +61,6 @@ export const applyChange = (snapshot: StoreSnapshot, change: StoreChange): Store
 
   return snapshot;
 };
+
+export const applyChange = (snapshot: StoreSnapshot, change: StoreChange): StoreSnapshot =>
+  applyClientChange(applyPaneChange(snapshot, change), change);

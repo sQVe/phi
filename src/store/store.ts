@@ -14,9 +14,19 @@ export interface Pane {
   exitCode: number | undefined;
 }
 
+// Colors as 0xRRGGBB numbers.
+export interface Theme {
+  foreground: number;
+  background: number;
+  // Palette indexes 0-15.
+  palette: readonly number[];
+}
+
 export interface Client {
   id: ClientId;
   size: TerminalSize;
+  // Absent until the client reports the colors of its terminal.
+  theme: Theme | undefined;
 }
 
 export interface State {
@@ -34,6 +44,7 @@ export type Intent =
   | { type: 'startPane' }
   | { type: 'attachClient'; size: TerminalSize }
   | { type: 'resizeClient'; clientId: ClientId; size: TerminalSize }
+  | { type: 'setClientTheme'; clientId: ClientId; theme: Theme }
   | { type: 'detachClient'; clientId: ClientId }
   | { type: 'stopServer' };
 
@@ -55,6 +66,7 @@ export type Change =
   | { type: 'paneResized'; paneId: PaneId; size: TerminalSize }
   | { type: 'clientAttached'; client: Client }
   | { type: 'clientResized'; clientId: ClientId; size: TerminalSize }
+  | { type: 'clientThemeChanged'; clientId: ClientId; theme: Theme }
   | { type: 'clientDetached'; clientId: ClientId; reason: DetachReason }
   | { type: 'serverStopping' };
 
@@ -130,6 +142,14 @@ const isLive = (pane: Pane): boolean =>
 const attachedClientOf = (state: State): Client | undefined =>
   state.clients.find((client) => client.id === state.attachedClientId);
 
+// The colors the pane's terminal answers with: those of the attached client, once it reported them.
+export const paneTheme = (state: State): Theme | undefined => attachedClientOf(state)?.theme;
+
+const sameTheme = (left: Theme | undefined, right: Theme): boolean =>
+  left?.foreground === right.foreground &&
+  left.background === right.background &&
+  left.palette.every((color, index) => color === right.palette[index]);
+
 const fitPane = (state: State): { pane: Pane | undefined; changes: Change[] } => {
   const { pane } = state;
   const client = attachedClientOf(state);
@@ -178,7 +198,7 @@ const startPane = (state: State): Applied | Rejected => {
 };
 
 const attachClient = (state: State, size: TerminalSize): Applied => {
-  const client: Client = { id: clientId(state.nextClientNumber), size };
+  const client: Client = { id: clientId(state.nextClientNumber), size, theme: undefined };
   const previous = state.attachedClientId;
   const changes: Change[] = [];
 
@@ -222,6 +242,25 @@ const resizeClient = (state: State, id: ClientId, size: TerminalSize): Applied |
     { type: 'clientResized', clientId: id, size },
     ...fitted.changes,
   ]);
+};
+
+const setClientTheme = (state: State, id: ClientId, theme: Theme): Applied | Rejected => {
+  const reporting = state.clients.find((known) => known.id === id);
+
+  if (reporting === undefined) {
+    return reject(state, 'unknownClient');
+  }
+
+  if (sameTheme(reporting.theme, theme)) {
+    return commit(state, []);
+  }
+
+  const themed: State = {
+    ...state,
+    clients: state.clients.map((client) => (client.id === id ? { ...client, theme } : client)),
+  };
+
+  return commit(themed, [{ type: 'clientThemeChanged', clientId: id, theme }]);
 };
 
 // The pane keeps its size after a detach, so the next attach redraws the same screen.
@@ -277,6 +316,10 @@ export const applyIntent = (state: State, intent: Intent): Applied | Rejected =>
 
   if (intent.type === 'resizeClient') {
     return resizeClient(state, intent.clientId, intent.size);
+  }
+
+  if (intent.type === 'setClientTheme') {
+    return setClientTheme(state, intent.clientId, intent.theme);
   }
 
   if (intent.type === 'detachClient') {
