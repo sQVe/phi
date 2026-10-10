@@ -6,6 +6,8 @@ import type { InputToken } from './inputTokens.ts';
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+const byteOfA = 0x61;
+
 const describeToken = (token: InputToken): string => {
   if (token.kind === 'key') {
     return `key:${token.raw}${token.escapeSent ? ':sent' : ''}`;
@@ -312,6 +314,10 @@ it('passes every reply OpenTUI asks for as a response', () => {
     '\x1b[O',
     '\x1b[?997;1n',
     '\x1b[?997;2n',
+    '\x1b]4;1;rgb:cdcd/0000/0000\x07',
+    '\x1b]4;255;#eeeeee\x1b\\',
+    '\x1b]12;rgb:ff/ff/ff\x07',
+    '\x1b]19;#000000\x07',
   ];
 
   expect(read(replies.join(''))).toEqual(replies.map((reply) => `response:${reply}`));
@@ -386,4 +392,26 @@ it('releases an unfinished reply body once it is over the length limit', () => {
   expect(read('\x1b]11;')).toEqual([]);
   expect(read('a'.repeat(510))).not.toEqual([]);
   expect(holding()).toBe(false);
+});
+
+it('keeps a large paste that arrives in many reads, in time linear in its size', () => {
+  const tokenizer = createInputTokenizer();
+  const chunk = new Uint8Array(4096).fill(byteOfA);
+  const reads = (16 * 1024 * 1024) / chunk.length;
+  const started = performance.now();
+
+  tokenizer.push(encoder.encode('\x1b[200~'), 0);
+
+  for (let read = 0; read < reads; read += 1) {
+    tokenizer.push(chunk, 0);
+  }
+
+  const tokens = tokenizer.push(encoder.encode('\x1b[201~'), 0);
+  const elapsedMs = performance.now() - started;
+  const [token] = tokens;
+
+  expect(tokens).toHaveLength(1);
+  expect(token?.kind === 'paste' ? token.bytes.length : 0).toBe(reads * chunk.length);
+  // Copying the open paste on every read takes several seconds for this size.
+  expect(elapsedMs).toBeLessThan(3000);
 });

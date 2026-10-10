@@ -10,8 +10,10 @@ export interface InputTokenizer {
   holding: () => boolean;
 }
 
+// The reads of an open paste stay separate until it ends, so a long paste is copied once.
 interface Paste {
-  bytes: Uint8Array;
+  parts: Uint8Array[];
+  length: number;
   escapeSent: boolean;
 }
 
@@ -37,21 +39,25 @@ const linuxFunctionFinals = new Set(bytesOf('ABCDE'));
 
 const holdWindowMs = 50;
 
-// Input is a key unless it has the exact shape of a reply to a query OpenTUI 0.5.17 writes at
-// startup (see the writes in the renderer's setup). Only these shapes go to OpenTUI; every other
-// complete sequence goes to the pane as a key.
-//   OSC 10 and 11: foreground and background color replies (`ESC]10;?` and `ESC]11;?`).
+// Input is a key unless it has the exact shape of a reply to a query OpenTUI 0.5.17 writes, from
+// its native setup or its palette detection. Only these shapes go to OpenTUI; every other complete
+// sequence goes to the pane as a key.
+//   OSC 4: palette color replies (`ESC]4;n;?`). OSC 10 to 19: special color replies.
 //   OSC 99: the notification capability reply. OSC 1337: the iTerm2 capabilities reply.
 //   DCS 1+r and 0+r: XTGETTCAP replies. DCS >|: the XTVERSION reply.
 //   APC G: the Kitty graphics query reply.
 const stringReplyPrefixes = new Map<number, string[]>([
-  [byteOf(']'), ['10;', '11;', '99;', '1337;']],
+  [
+    byteOf(']'),
+    ['4;', '10;', '11;', '12;', '13;', '14;', '15;', '16;', '17;', '18;', '19;', '99;', '1337;'],
+  ],
   [byteOf('P'), ['1+r', '0+r', '>|']],
   [byteOf('_'), ['G']],
 ]);
 
 // A complete body, without the introducer and the terminator:
-//   OSC 10 and 11: a color value, `rgb:` and three hex groups of one to four digits.
+//   OSC 4 and OSC 10 to 19: a color value, `rgb:` and three hex groups of one to four digits, or
+//   `#` and six hex digits. OSC 4 has the palette index before it.
 //   OSC 99: `99;` and printable text. OSC 1337: `Capabilities=` and printable text.
 //   DCS 1+r and 0+r: hex-encoded names, with an optional `=` and hex-encoded value.
 //   DCS >|: the terminal name and version as printable text.
@@ -60,7 +66,7 @@ const stringReplyBodies = new Map<number, RegExp[]>([
   [
     byteOf(']'),
     [
-      /^1[01];rgb:[0-9a-f]{1,4}\/[0-9a-f]{1,4}\/[0-9a-f]{1,4}$/i,
+      /^(?:4;[0-9]{1,3}|1[0-9]);(?:rgb:[0-9a-f]{1,4}\/[0-9a-f]{1,4}\/[0-9a-f]{1,4}|#[0-9a-f]{6})$/i,
       /^99;[\x20-\x7e]+$/,
       /^1337;Capabilities=[\x20-\x7e]*$/,
     ],
@@ -137,6 +143,35 @@ const concat = (first: Uint8Array, second: Uint8Array): Uint8Array => {
   joined.set(second, first.length);
 
   return joined;
+};
+
+const joinParts = (parts: Uint8Array[], length: number): Uint8Array => {
+  const joined = new Uint8Array(length);
+  let offset = 0;
+
+  for (const part of parts) {
+    joined.set(part.subarray(0, length - offset), offset);
+    offset += Math.min(part.length, length - offset);
+  }
+
+  return joined;
+};
+
+// The last bytes of the open paste that could start an end marker the next read finishes.
+const pasteTail = (open: Paste): Uint8Array => {
+  const tailLength = Math.min(open.length, pasteEnd.length - 1);
+  const tail = new Uint8Array(tailLength);
+  let filled = 0;
+
+  for (let index = open.parts.length - 1; filled < tailLength; index -= 1) {
+    const part = open.parts[index] ?? new Uint8Array();
+    const taken = Math.min(part.length, tailLength - filled);
+
+    tail.set(part.subarray(part.length - taken), tailLength - filled - taken);
+    filled += taken;
+  }
+
+  return tail;
 };
 
 const indexOfPasteEnd = (bytes: Uint8Array, from: number): number => {
@@ -374,20 +409,24 @@ export const createInputTokenizer = (): InputTokenizer => {
     nowMs: number,
   ): Uint8Array | undefined => {
     pasteAt = nowMs;
-    const searchFrom = Math.max(0, open.bytes.length - pasteEnd.length + 1);
-
-    open.bytes = concat(open.bytes, input);
-
-    const end = indexOfPasteEnd(open.bytes, searchFrom);
+    const tail = pasteTail(open);
+    const window = concat(tail, input);
+    const end = indexOfPasteEnd(window, 0);
 
     if (end === -1) {
+      open.parts.push(input.slice());
+      open.length += input.length;
+
       return undefined;
     }
 
-    tokens.push({ kind: 'paste', bytes: open.bytes.slice(0, end), escapeSent: open.escapeSent });
+    const bodyLength = open.length - tail.length + end;
+    const bytes = joinParts([...open.parts, input], bodyLength);
+
+    tokens.push({ kind: 'paste', bytes, escapeSent: open.escapeSent });
     paste = undefined;
 
-    return open.bytes.slice(end + pasteEnd.length);
+    return window.slice(end + pasteEnd.length);
   };
 
   const emit = (
@@ -411,7 +450,7 @@ export const createInputTokenizer = (): InputTokenizer => {
     }
 
     if (scanned.kind === 'pasteStart') {
-      paste = { bytes: new Uint8Array(), escapeSent };
+      paste = { parts: [], length: 0, escapeSent };
       pasteAt = nowMs;
     }
   };
@@ -483,7 +522,9 @@ export const createInputTokenizer = (): InputTokenizer => {
     const tokens: InputToken[] = [];
 
     if (paste !== undefined && nowMs - pasteAt >= pasteWindowMs) {
-      tokens.push({ kind: 'paste', bytes: paste.bytes, escapeSent: paste.escapeSent });
+      const bytes = joinParts(paste.parts, paste.length);
+
+      tokens.push({ kind: 'paste', bytes, escapeSent: paste.escapeSent });
       paste = undefined;
     }
 
