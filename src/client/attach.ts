@@ -6,6 +6,7 @@ import {
   encodeControl,
   encodeFrame,
   FrameKind,
+  maxFramePayloadBytes,
   parseControl,
 } from '../protocol/protocol.ts';
 import type { BuildVersion, ControlMessage } from '../protocol/protocol.ts';
@@ -71,6 +72,11 @@ export type AttachResult =
 const rowCacheLimit = 10_000;
 
 const handshakeTimeoutMs = 10_000;
+
+// An input payload starts with the pane number as one 32-bit word.
+const paneNumberBytes = 4;
+
+const inputBytesPerFrame = maxFramePayloadBytes - paneNumberBytes;
 
 export const connectAttach = async (
   socketPath: string,
@@ -300,7 +306,11 @@ export const connectAttach = async (
     sendInput: (pane, bytes) => {
       const number = Number(pane.slice('pane-'.length));
 
-      enqueue(encodeFrame(FrameKind.input, encodePaneInput({ pane: number, bytes })));
+      for (let start = 0; start < bytes.length; start += inputBytesPerFrame) {
+        const part = bytes.subarray(start, start + inputBytesPerFrame);
+
+        enqueue(encodeFrame(FrameKind.input, encodePaneInput({ pane: number, bytes: part })));
+      }
     },
     close: () => {
       end('requested');

@@ -10,6 +10,7 @@ import {
   encodeControl,
   encodeFrame,
   FrameKind,
+  maxFramePayloadBytes,
   parseControl,
 } from '../src/protocol/protocol.ts';
 import type { ControlMessage } from '../src/protocol/protocol.ts';
@@ -69,7 +70,38 @@ const listen = async (respond: (message: ControlMessage) => Reply) => {
   const received: ControlMessage[] = [];
   const inputs: Uint8Array[] = [];
   const inputArrived = Promise.withResolvers<undefined>();
+  const inputWaiters: { bytes: number; resolve: () => void }[] = [];
+  let inputBytes = 0;
   const decoder = createFrameDecoder();
+
+  // The pane-number word comes before the input bytes in each payload.
+  const takeInput = (payload: Uint8Array): void => {
+    inputs.push(payload);
+    inputBytes += payload.length - 4;
+    inputArrived.resolve(undefined);
+
+    for (const waiter of inputWaiters.filter((each) => inputBytes >= each.bytes)) {
+      waiter.resolve();
+    }
+  };
+
+  const inputBytesArrived = async (bytes: number): Promise<void> => {
+    const { promise, resolve } = Promise.withResolvers<undefined>();
+
+    inputWaiters.push({
+      bytes,
+      resolve: () => {
+        resolve(undefined);
+      },
+    });
+
+    if (inputBytes >= bytes) {
+      resolve(undefined);
+    }
+
+    await promise;
+  };
+
   const sockets: Bun.Socket[] = [];
 
   const listener = Bun.listen({
@@ -89,8 +121,7 @@ const listen = async (respond: (message: ControlMessage) => Reply) => {
 
         for (const frame of decoded.frames) {
           if (frame.kind === FrameKind.input) {
-            inputs.push(frame.payload);
-            inputArrived.resolve(undefined);
+            takeInput(frame.payload);
 
             continue;
           }
@@ -126,7 +157,14 @@ const listen = async (respond: (message: ControlMessage) => Reply) => {
     await rm(directory, { recursive: true, force: true });
   });
 
-  return { socketPath, received, inputs, inputArrived: inputArrived.promise, sockets };
+  return {
+    socketPath,
+    received,
+    inputs,
+    inputArrived: inputArrived.promise,
+    inputBytesArrived,
+    sockets,
+  };
 };
 
 const untilState = async (
@@ -328,6 +366,27 @@ it('sends input bytes for a pane as one input frame', async () => {
 
   expect(server.inputs).toHaveLength(1);
   expect(decoded).toEqual({ ok: true, input: { pane: 1, bytes } });
+});
+
+it('splits input larger than one frame across input frames in order', async () => {
+  const bytes = new Uint8Array(maxFramePayloadBytes + 10).map((_, index) => index % 251);
+
+  const server = await listen((message) =>
+    message.type === 'hello' ? [{ type: 'welcome' }, snapshotMessage(1)] : [],
+  );
+
+  const session = await attach(server);
+
+  session.sendInput(paneId(1), bytes);
+
+  await server.inputBytesArrived(bytes.length);
+
+  const decoded = server.inputs.map((payload) => decodePaneInput(payload));
+  const parts = decoded.map((result) => (result.ok ? result.input.bytes : new Uint8Array()));
+
+  expect(server.inputs.length).toBeGreaterThan(1);
+  expect(decoded.every((result) => result.ok && result.input.pane === 1)).toBe(true);
+  expect(Buffer.concat(parts).equals(Buffer.from(bytes))).toBe(true);
 });
 
 it('returns both versions when the server refuses the build', async () => {
