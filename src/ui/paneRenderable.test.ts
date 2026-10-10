@@ -1,17 +1,18 @@
 import { afterEach, expect, it } from 'bun:test';
 
-import { TextAttributes } from '@opentui/core';
+import { RGBA, TextAttributes } from '@opentui/core';
 import { createTestRenderer } from '@opentui/core/testing';
 import type { TestRendererSetup } from '@opentui/core/testing';
 
 import { createRowCache } from '../client/client.ts';
-import { cellWords } from '../rows/rows.ts';
+import { cellWords, defaultBackgroundSlot, defaultForegroundSlot } from '../rows/rows.ts';
 import type { RowUpdate } from '../rows/rows.ts';
 import { PaneRenderable } from './paneRenderable.ts';
 
 interface TestCell {
   column: number;
   codePoint: number;
+  foreground?: number;
   background?: number;
   flags?: number;
 }
@@ -24,13 +25,14 @@ const wideTail = 0x2_00;
 
 const wideHead = 0x1_00;
 
-const rowUpdate = (cells: TestCell[], cursorVisible = false): RowUpdate => {
+const rowUpdate = (cells: TestCell[], colors: number[] = [], cursorVisible = false): RowUpdate => {
   const words = new Uint32Array(stride);
 
   for (const cell of cells) {
     const start = 1 + cell.column * cellWords;
 
     words[start] = cell.codePoint;
+    words[start + 1] = cell.foreground ?? 0;
     words[start + 2] = cell.background ?? 0;
     words[start + 3] = cell.flags ?? 0;
   }
@@ -47,6 +49,7 @@ const rowUpdate = (cells: TestCell[], cursorVisible = false): RowUpdate => {
     rowCount: 1,
     cells: words,
     graphemes: new Uint32Array(),
+    colors: Uint32Array.from(colors),
   };
 };
 
@@ -145,10 +148,10 @@ it('moves the cursor inside one row without new rows', async () => {
     return inverted;
   };
 
-  await show(rowUpdate([{ column: 0, codePoint: 0x61 }], true));
+  await show(rowUpdate([{ column: 0, codePoint: 0x61 }], [], true));
   expect(invertedColumns()).toEqual([0]);
 
-  const moved = rowUpdate([], true);
+  const moved = rowUpdate([], [], true);
 
   moved.rowCount = 0;
   moved.cells = new Uint32Array();
@@ -187,4 +190,64 @@ it('reports the newest drawn sequence once, only after a render', async () => {
   await created.renderOnce();
 
   expect(drawn).toEqual([2]);
+});
+
+const cellColors = (created: TestRendererSetup, column: number) => {
+  const spans = created.captureSpans().lines[0]?.spans ?? [];
+  let start = 0;
+
+  for (const span of spans) {
+    if (column < start + span.width) {
+      return { fg: span.fg.toInts().slice(0, 3), bg: span.bg.toInts().slice(0, 3) };
+    }
+
+    start += span.width;
+  }
+
+  return undefined;
+};
+
+it('draws a palette cell in the color the program set', async () => {
+  const { show, created } = await startPane();
+
+  await show(
+    rowUpdate(
+      [
+        { column: 0, codePoint: 0x61, foreground: 2 },
+        { column: 1, codePoint: 0x62, foreground: 3 },
+      ],
+      [1, 0x1_12_34_56],
+    ),
+  );
+
+  expect(cellColors(created, 0)?.fg).toEqual([0x12, 0x34, 0x56]);
+  expect(cellColors(created, 1)?.fg).toEqual(RGBA.fromIndex(2).toInts().slice(0, 3));
+});
+
+it('draws default cells and the row fill in the default colors the program set', async () => {
+  const { show, created } = await startPane();
+
+  await show(
+    rowUpdate(
+      [{ column: 0, codePoint: 0x61 }],
+      [defaultForegroundSlot, 0x1_01_02_03, defaultBackgroundSlot, 0x1_0a_0b_0c],
+    ),
+  );
+
+  expect(cellColors(created, 0)).toEqual({ fg: [1, 2, 3], bg: [10, 11, 12] });
+  expect(cellColors(created, 5)?.bg).toEqual([10, 11, 12]);
+});
+
+it('draws in the theme colors again after the program resets its colors', async () => {
+  const { show, created } = await startPane();
+  const cells = [{ column: 0, codePoint: 0x61, foreground: 2 }];
+
+  await show(rowUpdate(cells, [1, 0x1_12_34_56, defaultBackgroundSlot, 0x1_0a_0b_0c]));
+  await show(rowUpdate(cells));
+
+  const theme = RGBA.defaultBackground().toInts().slice(0, 3);
+
+  expect(cellColors(created, 0)?.fg).toEqual(RGBA.fromIndex(1).toInts().slice(0, 3));
+  expect(cellColors(created, 0)?.bg).toEqual(theme);
+  expect(cellColors(created, 5)?.bg).toEqual(theme);
 });

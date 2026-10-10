@@ -21,6 +21,9 @@ export interface RowUpdate {
   // Each cluster longer than one code point as one word with the index in cells of its cell's
   // code point, one word with its length, then its code points, base first.
   graphemes: Uint32Array;
+  // The colors the program changed, as pairs of a slot (a palette index, defaultForegroundSlot, or
+  // defaultBackgroundSlot) and 0x1000000 plus the 0xRRGGBB color. Every update has the full list.
+  colors: Uint32Array;
 }
 
 type TextRows = Pick<RowUpdate, 'rowCount' | 'cells' | 'graphemes'>;
@@ -33,7 +36,10 @@ export type DecodeRowUpdateResult =
   | { ok: false; reason: 'graphemePastEnd' }
   | { ok: false; reason: 'graphemePastCells' }
   | { ok: false; reason: 'graphemeOffCell' }
-  | { ok: false; reason: 'graphemeTooShort' };
+  | { ok: false; reason: 'graphemeTooShort' }
+  | { ok: false; reason: 'colorPastEnd' }
+  | { ok: false; reason: 'colorSlotInvalid' }
+  | { ok: false; reason: 'colorInvalid' };
 
 // Raw bytes for a pane's PTY.
 export interface PaneInput {
@@ -55,6 +61,11 @@ type GraphemeProblem =
 // the CellFlag and CellWidth bits. A color is 0 for the default color, 1-256 for a palette index
 // plus 1, and 0x1000000 plus the 0xRRGGBB value for an RGB color.
 export const cellWords = 4;
+
+// Color slots beside the 256 palette indexes: the default foreground and background.
+export const defaultForegroundSlot = 256;
+
+export const defaultBackgroundSlot = 257;
 
 // Bits of a cell's flags word.
 export enum CellFlag {
@@ -97,7 +108,8 @@ export enum ModeFlag {
 // Messages are 32-bit words in the host's byte order. The server and its clients share one host.
 const wordBytes = 4;
 
-// Header words of a row update. A row number takes two words: the low 32 bits, then the rest.
+// Header words of a row update. A row number takes two words: the low 32 bits, then the rest. The
+// header is followed by the color words, the cell words, then the grapheme words.
 const header = {
   pane: 0,
   sequence: 1,
@@ -111,9 +123,14 @@ const header = {
   first: 9,
   activeTop: 11,
   rowCount: 13,
+  colorCount: 14,
 };
 
-const headerWords = 14;
+const headerWords = 15;
+
+const colorMarker = 0x1_00_00_00;
+
+const colorMask = 0xff_ff_ff;
 
 const lowWordRange = 0x1_00_00_00_00;
 
@@ -133,6 +150,22 @@ const assertRowNumber = (value: number, name: string) => {
     Number.isSafeInteger(value) && value >= 0,
     `The ${name} must be a whole number below 2^53, got ${value}.`,
   );
+};
+
+const isColorWord = (word: number) => (word & ~colorMask) >>> 0 === colorMarker;
+
+const colorProblem = (colors: Uint32Array): 'colorSlotInvalid' | 'colorInvalid' | undefined => {
+  for (let index = 0; index < colors.length; index += 2) {
+    if ((colors[index] ?? 0) > defaultBackgroundSlot) {
+      return 'colorSlotInvalid';
+    }
+
+    if (!isColorWord(colors[index + 1] ?? 0)) {
+      return 'colorInvalid';
+    }
+  }
+
+  return undefined;
 };
 
 const rowWords = (columns: number) => 1 + columns * cellWords;
@@ -216,19 +249,28 @@ const assertRowUpdate = (update: RowUpdate) => {
   assertRowNumber(update.activeTop, 'active top row number');
   assertWord(update.rowCount, 'row count');
 
+  invariant(update.colors.length % 2 === 0, 'The colors must be pairs of a slot and a color.');
+
+  const problem = colorProblem(update.colors);
+
+  invariant(problem === undefined, `The colors are invalid: ${problem}.`);
+
   invariant(
     update.cells.length === update.rowCount * rowWords(update.size.columns),
     `${update.rowCount} rows of ${update.size.columns} columns do not fill ${update.cells.length} cell words.`,
   );
 };
 
+const rowUpdateWords = (update: RowUpdate): number =>
+  headerWords + update.colors.length + update.cells.length + update.graphemes.length;
+
 export const rowUpdateBytes = (update: RowUpdate): number =>
-  (headerWords + update.cells.length + update.graphemes.length) * Uint32Array.BYTES_PER_ELEMENT;
+  rowUpdateWords(update) * Uint32Array.BYTES_PER_ELEMENT;
 
 export const encodeRowUpdate = (update: RowUpdate): Uint8Array => {
   assertRowUpdate(update);
 
-  const words = new Uint32Array(headerWords + update.cells.length + update.graphemes.length);
+  const words = new Uint32Array(rowUpdateWords(update));
 
   words[header.pane] = update.pane;
   words[header.sequence] = update.sequence;
@@ -242,8 +284,13 @@ export const encodeRowUpdate = (update: RowUpdate): Uint8Array => {
   writeRowNumber(words, header.first, update.first);
   writeRowNumber(words, header.activeTop, update.activeTop);
   words[header.rowCount] = update.rowCount;
-  words.set(update.cells, headerWords);
-  words.set(update.graphemes, headerWords + update.cells.length);
+  words[header.colorCount] = update.colors.length;
+
+  const cellStart = headerWords + update.colors.length;
+
+  words.set(update.colors, headerWords);
+  words.set(update.cells, cellStart);
+  words.set(update.graphemes, cellStart + update.cells.length);
 
   return new Uint8Array(words.buffer);
 };
@@ -285,7 +332,7 @@ const graphemeProblem = (
   return undefined;
 };
 
-const readRowUpdate = (words: Uint32Array, cellCount: number): RowUpdate => ({
+const readRowUpdate = (words: Uint32Array, colorCount: number, cellCount: number): RowUpdate => ({
   pane: words[header.pane] ?? 0,
   sequence: words[header.sequence] ?? 0,
   size: { columns: words[header.columns] ?? 0, rows: words[header.rows] ?? 0 },
@@ -299,8 +346,9 @@ const readRowUpdate = (words: Uint32Array, cellCount: number): RowUpdate => ({
   first: readRowNumber(words, header.first),
   activeTop: readRowNumber(words, header.activeTop),
   rowCount: words[header.rowCount] ?? 0,
-  cells: words.subarray(headerWords, headerWords + cellCount),
-  graphemes: words.subarray(headerWords + cellCount),
+  colors: words.subarray(headerWords, headerWords + colorCount),
+  cells: words.subarray(headerWords + colorCount, headerWords + colorCount + cellCount),
+  graphemes: words.subarray(headerWords + colorCount + cellCount),
 });
 
 // Returns an error for bytes the peer got wrong. It never throws.
@@ -319,21 +367,35 @@ export const decodeRowUpdate = (bytes: Uint8Array): DecodeRowUpdateResult => {
     return { ok: false, reason: 'rowNumberTooLarge' };
   }
 
+  const colorCount = words[header.colorCount] ?? 0;
+
+  if (colorCount % 2 !== 0 || headerWords + colorCount > words.length) {
+    return { ok: false, reason: 'colorPastEnd' };
+  }
+
+  const colors = words.subarray(headerWords, headerWords + colorCount);
+  const colorFault = colorProblem(colors);
+
+  if (colorFault !== undefined) {
+    return { ok: false, reason: colorFault };
+  }
+
   const columns = words[header.columns] ?? 0;
   const cellCount = (words[header.rowCount] ?? 0) * rowWords(columns);
+  const cellStart = headerWords + colorCount;
 
-  if (headerWords + cellCount > words.length) {
+  if (cellStart + cellCount > words.length) {
     return { ok: false, reason: 'rowCountMismatch' };
   }
 
-  const graphemes = words.subarray(headerWords + cellCount);
+  const graphemes = words.subarray(cellStart + cellCount);
   const problem = graphemeProblem(graphemes, cellCount, columns);
 
   if (problem !== undefined) {
     return { ok: false, reason: problem };
   }
 
-  return { ok: true, update: readRowUpdate(words, cellCount) };
+  return { ok: true, update: readRowUpdate(words, colorCount, cellCount) };
 };
 
 export const encodePaneInput = (input: PaneInput): Uint8Array => {

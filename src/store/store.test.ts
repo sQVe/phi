@@ -1,8 +1,8 @@
 import { expect, it } from 'bun:test';
 
 import { clientId, paneId } from '../ids.ts';
-import { applyFact, applyIntent, createState, snapshot } from './store.ts';
-import type { Applied, Fact, Ignored, Intent, Pane, Rejected, State } from './store.ts';
+import { applyFact, applyIntent, createState, paneTheme, snapshot } from './store.ts';
+import type { Applied, Fact, Ignored, Intent, Pane, Rejected, State, Theme } from './store.ts';
 
 const expectApplied = (result: Applied | Ignored | Rejected): Applied => {
   if (result.kind !== 'applied') {
@@ -63,7 +63,7 @@ it('refuses to start a pane while the server stops and leaves state unchanged', 
 it('resizes the pane to the layout size of a client that attaches', () => {
   const state = run([{ type: 'startPane' }]);
   const result = intent(state, { type: 'attachClient', size: { columns: 100, rows: 30 } });
-  const client = { id: clientId(1), size: { columns: 100, rows: 30 } };
+  const client = { id: clientId(1), size: { columns: 100, rows: 30 }, theme: undefined };
 
   expect(result.state.attachedClientId).toBe(clientId(1));
   expect(result.state.pane?.size).toEqual({ columns: 100, rows: 29 });
@@ -81,7 +81,7 @@ it('takes over from the attached client when a second client attaches', () => {
   ]);
 
   const result = intent(state, { type: 'attachClient', size: { columns: 90, rows: 20 } });
-  const client = { id: clientId(2), size: { columns: 90, rows: 20 } };
+  const client = { id: clientId(2), size: { columns: 90, rows: 20 }, theme: undefined };
 
   expect(result.state.attachedClientId).toBe(clientId(2));
   expect(result.state.clients).toEqual([client]);
@@ -282,4 +282,85 @@ it('raises the revision by one per change, and snapshots the last revision', () 
     attachedClientId: clientId(1),
     clients: attached.state.clients,
   });
+});
+
+const lightTheme: Theme = {
+  foreground: 0x11_22_33,
+  background: 0xdd_ee_ff,
+  palette: Array.from({ length: 16 }, (_, index) => index),
+};
+
+const darkTheme: Theme = { ...lightTheme, background: 0x00_00_10 };
+
+const attachedState = (): State => run([{ type: 'attachClient', size: { columns: 80, rows: 24 } }]);
+
+it('has no pane colors until the attached client reports its theme', () => {
+  expect(paneTheme(attachedState())).toBeUndefined();
+});
+
+it('uses the theme the attached client reports as the pane colors', () => {
+  const result = intent(attachedState(), {
+    type: 'setClientTheme',
+    clientId: clientId(1),
+    theme: lightTheme,
+  });
+
+  expect(paneTheme(result.state)).toEqual(lightTheme);
+
+  expect(result.changes).toEqual([
+    { type: 'clientThemeChanged', clientId: clientId(1), theme: lightTheme },
+  ]);
+
+  expect(result.state.revision).toBe(attachedState().revision + 1);
+});
+
+it('treats a theme equal to the client theme as no change', () => {
+  const themed = intent(attachedState(), {
+    type: 'setClientTheme',
+    clientId: clientId(1),
+    theme: lightTheme,
+  }).state;
+
+  const result = intent(themed, {
+    type: 'setClientTheme',
+    clientId: clientId(1),
+    theme: { ...lightTheme, palette: [...lightTheme.palette] },
+  });
+
+  expect(result.changes).toEqual([]);
+  expect(result.state).toEqual(themed);
+});
+
+it('changes the pane colors when a client with other colors takes over', () => {
+  const themed = run([
+    { type: 'attachClient', size: { columns: 80, rows: 24 } },
+    { type: 'setClientTheme', clientId: clientId(1), theme: lightTheme },
+    { type: 'attachClient', size: { columns: 80, rows: 24 } },
+  ]);
+
+  expect(paneTheme(themed)).toBeUndefined();
+
+  const result = intent(themed, {
+    type: 'setClientTheme',
+    clientId: clientId(2),
+    theme: darkTheme,
+  });
+
+  expect(paneTheme(result.state)).toEqual(darkTheme);
+
+  expect(result.changes).toEqual([
+    { type: 'clientThemeChanged', clientId: clientId(2), theme: darkTheme },
+  ]);
+});
+
+it('refuses a theme from an unknown client and leaves state unchanged', () => {
+  const state = attachedState();
+
+  const result = applyIntent(state, {
+    type: 'setClientTheme',
+    clientId: clientId(9),
+    theme: lightTheme,
+  });
+
+  expect(result).toEqual({ kind: 'rejected', state, reason: 'unknownClient' });
 });

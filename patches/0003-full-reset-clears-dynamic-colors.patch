@@ -1,0 +1,22 @@
+Make a full reset (RIS) clear the foreground, background, and cursor colors a program set with
+OSC 10, 11, and 12.
+
+Phi needs this because it tells clients which colors a program changed, and a client shows its own
+theme for the rest. Upstream resets only the palette on RIS, like xterm and VTE, so a client would
+keep a program's colors after a reset. tmux and Zellij clear a pane's colors on RIS, and Phi does
+the same. The defaults the host set stay in place.
+
+Upstream: https://github.com/ghostty-org/ghostty/discussions/14627
+
+--- a/src/terminal/Terminal.zig
++++ b/src/terminal/Terminal.zig
+@@ -4966,6 +4967,9 @@ pub fn fullReset(self: *Terminal) void {
+     };
+     self.setCursorStyle(.default);
+     self.colors.palette.resetAll();
++    self.colors.foreground.reset();
++    self.colors.background.reset();
++    self.colors.cursor.reset();
+ 
+     // Always mark dirty so we redraw everything
+     self.flags.dirty.clear = true;

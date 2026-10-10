@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { clientId, paneId } from '../ids.ts';
 import type { ClientId, PaneId } from '../ids.ts';
-import type { Change, Client, DetachReason, Pane, Snapshot } from '../store/store.ts';
+import type { Change, Client, DetachReason, Pane, Snapshot, Theme } from '../store/store.ts';
 
 // The package.json version and the Ghostty commit, as `phi --version` prints them.
 export interface BuildVersion {
@@ -68,7 +68,23 @@ const paneSchema: z.ZodType<Pane> = z.object({
   exitCode: absent(z.number().int()),
 });
 
-const clientSchema: z.ZodType<Client> = z.object({ id: clientIdSchema, size: sizeSchema });
+const largestColor = 0xff_ff_ff;
+
+const paletteSize = 16;
+
+const color = z.number().int().min(0).max(largestColor);
+
+const themeSchema: z.ZodType<Theme> = z.object({
+  foreground: color,
+  background: color,
+  palette: z.array(color).length(paletteSize),
+});
+
+const clientSchema: z.ZodType<Client> = z.object({
+  id: clientIdSchema,
+  size: sizeSchema,
+  theme: absent(themeSchema),
+});
 
 const detachReasonSchema: z.ZodType<DetachReason> = z.enum(['requested', 'takenOver']);
 
@@ -83,6 +99,7 @@ const changeSchema: z.ZodType<Change> = z.discriminatedUnion('type', [
   z.object({ type: z.literal('paneResized'), paneId: paneIdSchema, size: sizeSchema }),
   z.object({ type: z.literal('clientAttached'), client: clientSchema }),
   z.object({ type: z.literal('clientResized'), clientId: clientIdSchema, size: sizeSchema }),
+  z.object({ type: z.literal('clientThemeChanged'), clientId: clientIdSchema, theme: themeSchema }),
   z.object({
     type: z.literal('clientDetached'),
     clientId: clientIdSchema,
@@ -107,6 +124,7 @@ const controlSchema = z.discriminatedUnion('type', [
   // Builds stop each other's servers with this frame, so it must keep this shape in every build.
   z.object({ type: z.literal('stop') }),
   z.object({ type: z.literal('resize'), size: sizeSchema }),
+  z.object({ type: z.literal('theme'), theme: themeSchema }),
   z.object({ type: z.literal('ack'), sequence: count.max(largestSequence) }),
   z.object({ type: z.literal('resync') }),
   z.object({ type: z.literal('snapshot'), snapshot: snapshotSchema }),

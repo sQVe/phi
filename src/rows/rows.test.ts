@@ -10,6 +10,7 @@ import {
   encodeRowUpdate,
   ModeFlag,
   rowsToText,
+  rowUpdateBytes,
 } from './rows.ts';
 import type { RowUpdate } from './rows.ts';
 
@@ -53,6 +54,7 @@ const rowUpdate = (overrides: Partial<RowUpdate> = {}): RowUpdate => ({
   rowCount: 1,
   cells: textRow(0, 'hello'),
   graphemes: new Uint32Array(),
+  colors: new Uint32Array(),
   ...overrides,
 });
 
@@ -79,6 +81,36 @@ it('round-trips a row update with one row, a cursor, and modes', () => {
   const update = rowUpdate();
 
   expect(roundTrip(update)).toEqual({ ok: true, update });
+});
+
+it('round-trips a row update with changed colors', () => {
+  const update = rowUpdate({ colors: Uint32Array.of(1, 0x1_12_34_56, 257, 0x1_00_00_00) });
+
+  expect(roundTrip(update)).toEqual({ ok: true, update });
+});
+
+it('round-trips colors beside rows and clusters', () => {
+  const update = rowUpdate({
+    colors: Uint32Array.of(255, 0x1_ff_ff_ff),
+    graphemes: Uint32Array.of(1, 2, 0x65, 0x3_01),
+  });
+
+  expect(roundTrip(update)).toEqual({ ok: true, update });
+});
+
+it('counts the colors in the byte size of an encoded update', () => {
+  const update = rowUpdate({ colors: Uint32Array.of(1, 0x1_12_34_56, 257, 0x1_00_00_00) });
+
+  expect(rowUpdateBytes(update)).toBe(encodeRowUpdate(update).length);
+});
+
+it.each([
+  ['an odd number of words', Uint32Array.of(1, 0x1_00_00_00, 2)],
+  ['a slot past the default background', Uint32Array.of(258, 0x1_00_00_00)],
+  ['a color without the marker bit', Uint32Array.of(1, 0x12_34_56)],
+  ['a color with bits above the marker', Uint32Array.of(1, 0x3_00_00_00)],
+])('refuses to encode colors with %s', (_name, colors) => {
+  expect(() => encodeRowUpdate(rowUpdate({ colors }))).toThrow();
 });
 
 it('round-trips a departed row, a wide character, a cluster, and row numbers above 2^32', () => {
@@ -139,6 +171,28 @@ it.each([
     'a row number of 2^53 or more',
     corrupted(rowUpdate(), (words) => words.with(12, 2 ** 21)),
     'rowNumberTooLarge',
+  ],
+  [
+    'a color count larger than the payload',
+    corrupted(rowUpdate(), (words) => words.with(14, 1000)),
+    'colorPastEnd',
+  ],
+  [
+    'an odd color count',
+    corrupted(rowUpdate({ colors: Uint32Array.of(1, 0x1_00_00_00) }), (words) => words.with(14, 1)),
+    'colorPastEnd',
+  ],
+  [
+    'a color slot past the default background',
+    corrupted(rowUpdate({ colors: Uint32Array.of(1, 0x1_00_00_00) }), (words) =>
+      words.with(15, 258),
+    ),
+    'colorSlotInvalid',
+  ],
+  [
+    'a color word without the marker bit',
+    corrupted(rowUpdate({ colors: Uint32Array.of(1, 0x1_00_00_00) }), (words) => words.with(16, 5)),
+    'colorInvalid',
   ],
   [
     'a grapheme index past the cells',

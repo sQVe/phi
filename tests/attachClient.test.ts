@@ -40,6 +40,7 @@ const snapshotAt = (revision: number, clients = 0) => ({
   clients: Array.from({ length: clients }, (_, index) => ({
     id: clientId(index + 1),
     size,
+    theme: undefined,
   })),
 });
 
@@ -52,6 +53,7 @@ const snapshotMessage = (revision: number, clients = 0): ControlMessage => ({
     clients: Array.from({ length: clients }, (_, index) => ({
       id: clientId(index + 1),
       size,
+      theme: undefined,
     })),
   },
 });
@@ -227,6 +229,7 @@ const rowUpdate = (overrides: Partial<RowUpdate> = {}): RowUpdate => {
     rowCount: 1,
     cells,
     graphemes: new Uint32Array(),
+    colors: new Uint32Array(),
     ...overrides,
   };
 };

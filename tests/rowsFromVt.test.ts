@@ -29,6 +29,7 @@ it('carries a vt frame through a row update with its cells and graphemes', () =>
     epoch: stable.epoch,
     first: stable.first,
     activeTop: stable.activeTop,
+    colors: new Uint32Array(),
   };
 
   const result = decodeRowUpdate(encodeRowUpdate(update));

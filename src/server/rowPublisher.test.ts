@@ -357,6 +357,34 @@ it('ends an overdue hold even before any subscriber joins', async () => {
   expect(rowsOf(lastUpdate(updates)).get(0)).toBe('ready');
 });
 
+it('sends a changed palette slot with no rows, and an empty list after a reset', () => {
+  const terminal = terminalForTest();
+  const publisher = publisherForTest(terminal);
+  const updates: RowUpdate[] = [];
+
+  terminal.write(encoder.encode('ready'));
+  terminal.stableRows();
+  publisher.subscribe((update) => updates.push(update));
+  publisher.publish();
+
+  expect(lastUpdate(updates).colors).toEqual(new Uint32Array());
+
+  terminal.write(encoder.encode('\u001B]4;1;rgb:12/34/56\u001B\\'));
+  terminal.stableRows();
+  publisher.publish();
+
+  const changed = lastUpdate(updates);
+
+  expect(changed.rowCount).toBe(0);
+  expect([...changed.colors]).toEqual([1, 0x1_12_34_56]);
+
+  terminal.write(encoder.encode('\u001Bc'));
+  terminal.stableRows();
+  publisher.publish();
+
+  expect([...lastUpdate(updates).colors]).toEqual([]);
+});
+
 const settled = async (promise: Promise<void>): Promise<boolean> =>
   Promise.race([promise.then(() => true), Bun.sleep(1).then(() => false)]);
 

@@ -6,7 +6,7 @@ import type { TerminalSize } from '../layout.ts';
 import { FrameKind } from '../protocol/protocol.ts';
 import type { BuildVersion, ControlMessage } from '../protocol/protocol.ts';
 import { encodeRowUpdate, rowsToText } from '../rows/rows.ts';
-import { applyFact, applyIntent, createState, snapshot } from '../store/store.ts';
+import { applyFact, applyIntent, createState, paneTheme, snapshot } from '../store/store.ts';
 import type { Change, Fact, Intent, Pane, Snapshot, State } from '../store/store.ts';
 import { createConnection } from './connection.ts';
 import type { Connection } from './connection.ts';
@@ -187,6 +187,23 @@ const subscribeRows = (context: ServerContext, connection: Connection): RowSubsc
   return { acknowledge, unsubscribe };
 };
 
+const applyAttachedTheme = (context: ServerContext, runtime: PaneRuntime): void => {
+  const theme = paneTheme(context.state);
+
+  if (theme !== undefined) {
+    runtime.terminal.setDefaultColors(theme.foreground, theme.background, theme.palette);
+  }
+};
+
+const applyThemeToPane = (context: ServerContext): void => {
+  const id = context.state.pane?.id;
+  const runtime = id === undefined ? undefined : context.runtime.panes.get(id);
+
+  if (runtime !== undefined) {
+    applyAttachedTheme(context, runtime);
+  }
+};
+
 const startPane = (context: ServerContext, pane: Pane, report: Report): void => {
   const { log } = context.options;
   const { id, generation } = pane;
@@ -220,6 +237,7 @@ const startPane = (context: ServerContext, pane: Pane, report: Report): void => 
     },
   });
 
+  applyAttachedTheme(context, spawned.pane);
   context.runtime.panes.set(id, spawned.pane);
   context.runtime.rowPublishers.set(id, { publisher, pending: false });
   log.info('Started the pane.', { paneId: id });
@@ -391,6 +409,10 @@ const runEffects = (context: ServerContext, changes: readonly Change[], report: 
       resizePane(context, change.paneId, change.size);
     }
 
+    if (change.type === 'clientThemeChanged') {
+      applyThemeToPane(context);
+    }
+
     if (change.type === 'serverStopping') {
       stopServer(context);
     }
@@ -544,6 +566,16 @@ const handleMessage = (
 
     if (clientId !== undefined) {
       dispatch(context, { type: 'resizeClient', clientId, size: message.size });
+    }
+
+    return;
+  }
+
+  if (message.type === 'theme') {
+    const clientId = context.runtime.clientIds.get(connection);
+
+    if (clientId !== undefined) {
+      dispatch(context, { type: 'setClientTheme', clientId, theme: message.theme });
     }
 
     return;

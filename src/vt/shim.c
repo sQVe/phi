@@ -379,6 +379,57 @@ void pane_scrollback(Pane *pane, uint64_t *info) {
   info[2] = memory.primary_resident_bytes;
 }
 
+// Appends the slot and the color key of a default color a program set.
+static size_t append_default_color(
+    Pane *pane, GhosttyTerminalData overridden_data, GhosttyTerminalData current_data, uint32_t slot, uint32_t *out) {
+  bool overridden = false;
+  GhosttyColorRgb current;
+  ghostty_terminal_get(pane->terminal, overridden_data, &overridden);
+  if (!overridden) return 0;
+  if (ghostty_terminal_get(pane->terminal, current_data, &current) != GHOSTTY_SUCCESS) return 0;
+  out[0] = slot;
+  out[1] = rgb_key(current);
+  return 2;
+}
+
+// Writes two words for each color a program set with OSC 4, 10, or 11, even to its default value:
+// the slot, then the color key of the current color. Slots 0-255 are palette indexes, 256 is the
+// default foreground, and 257 the default background. Returns the words written, at most 516.
+size_t pane_colors(Pane *pane, uint32_t *out) {
+  GhosttyColorRgb palette[256];
+  GhosttyColorPaletteMask overrides = {0};
+  size_t words = 0;
+  ghostty_terminal_get(pane->terminal, GHOSTTY_TERMINAL_DATA_COLOR_PALETTE, palette);
+  ghostty_terminal_get(pane->terminal, GHOSTTY_TERMINAL_DATA_COLOR_PALETTE_OVERRIDES, &overrides);
+  for (uint32_t index = 0; index < 256; index++) {
+    if (!GHOSTTY_COLOR_PALETTE_MASK_IS_SET(&overrides, index)) continue;
+    out[words++] = index;
+    out[words++] = rgb_key(palette[index]);
+  }
+  words += append_default_color(
+      pane, GHOSTTY_TERMINAL_DATA_COLOR_FOREGROUND_OVERRIDDEN, GHOSTTY_TERMINAL_DATA_COLOR_FOREGROUND, 256, out + words);
+  words += append_default_color(
+      pane, GHOSTTY_TERMINAL_DATA_COLOR_BACKGROUND_OVERRIDDEN, GHOSTTY_TERMINAL_DATA_COLOR_BACKGROUND, 257, out + words);
+  return words;
+}
+
+static GhosttyColorRgb rgb_from_key(uint32_t color) {
+  return (GhosttyColorRgb){(uint8_t)(color >> 16), (uint8_t)(color >> 8), (uint8_t)color};
+}
+
+// Sets the default foreground and background, then palette indexes 0-15, from 18 words of 0xRRGGBB.
+// Colors a program set with OSC stay as they are.
+void pane_set_default_colors(Pane *pane, const uint32_t *colors) {
+  GhosttyColorRgb foreground = rgb_from_key(colors[0]);
+  GhosttyColorRgb background = rgb_from_key(colors[1]);
+  GhosttyColorRgb palette[256];
+  ghostty_terminal_get(pane->terminal, GHOSTTY_TERMINAL_DATA_COLOR_PALETTE_DEFAULT, palette);
+  for (uint32_t index = 0; index < 16; index++) palette[index] = rgb_from_key(colors[2 + index]);
+  ghostty_terminal_set(pane->terminal, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, &foreground);
+  ghostty_terminal_set(pane->terminal, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &background);
+  ghostty_terminal_set(pane->terminal, GHOSTTY_TERMINAL_OPT_COLOR_PALETTE, palette);
+}
+
 static GhosttyPoint active_top_point(void) {
   return (GhosttyPoint){.tag = GHOSTTY_POINT_TAG_ACTIVE, .value = {.coordinate = {.x = 0, .y = 0}}};
 }

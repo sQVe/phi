@@ -6,9 +6,9 @@ import type { StoreSnapshot } from './snapshot.ts';
 
 const size = { columns: 80, rows: 24 };
 
-const first = { id: clientId(1), size };
+const first = { id: clientId(1), size, theme: undefined };
 
-const second = { id: clientId(2), size };
+const second = { id: clientId(2), size, theme: undefined };
 
 const snapshot: StoreSnapshot = {
   revision: 3,
@@ -48,4 +48,12 @@ it('resizes only the client the change names', () => {
   const next = applyChange(both, { type: 'clientResized', clientId: second.id, size: resized });
 
   expect(next.clients).toEqual([first, { ...second, size: resized }]);
+});
+
+it('records the theme of only the client the change names', () => {
+  const theme = { foreground: 1, background: 2, palette: Array.from({ length: 16 }, () => 3) };
+  const both = { ...snapshot, clients: [first, second] };
+  const next = applyChange(both, { type: 'clientThemeChanged', clientId: second.id, theme });
+
+  expect(next.clients).toEqual([first, { ...second, theme }]);
 });

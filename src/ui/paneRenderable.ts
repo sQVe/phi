@@ -2,7 +2,14 @@ import { FrameBufferRenderable, RGBA, TextAttributes } from '@opentui/core';
 import type { OptimizedBuffer, RenderContext } from '@opentui/core';
 
 import type { RowCache } from '../client/client.ts';
-import { CellFlag, CellWidth, cellWidthMask, cellWords } from '../rows/rows.ts';
+import {
+  CellFlag,
+  CellWidth,
+  cellWidthMask,
+  cellWords,
+  defaultBackgroundSlot,
+  defaultForegroundSlot,
+} from '../rows/rows.ts';
 
 interface PaneRenderableOptions {
   cache: RowCache;
@@ -40,22 +47,32 @@ const flagAttributes: [CellFlag, number][] = [
   [CellFlag.inverse, TextAttributes.INVERSE],
 ];
 
-const colorOf = (word: number, fallback: RGBA): RGBA => {
-  if (word === 0) {
-    return fallback;
-  }
+const rgbaOf = (word: number): RGBA => {
+  const rgb = word - rgbColorBase;
 
+  return RGBA.fromInts(
+    (rgb >> redShift) & byteMask,
+    (rgb >> greenShift) & byteMask,
+    rgb & byteMask,
+  );
+};
+
+const colorOf = (
+  word: number,
+  fallback: RGBA,
+  programColors: ReadonlyMap<number, number>,
+): RGBA => {
   if (word > paletteLimit) {
-    const rgb = word - rgbColorBase;
-
-    return RGBA.fromInts(
-      (rgb >> redShift) & byteMask,
-      (rgb >> greenShift) & byteMask,
-      rgb & byteMask,
-    );
+    return rgbaOf(word);
   }
 
-  return RGBA.fromIndex(word - 1);
+  const programColor = programColors.get(word - 1);
+
+  if (word !== 0 && programColor !== undefined) {
+    return rgbaOf(programColor);
+  }
+
+  return word === 0 ? fallback : RGBA.fromIndex(word - 1);
 };
 
 const attributesOf = (flags: number): number => {
@@ -141,6 +158,12 @@ export class PaneRenderable extends FrameBufferRenderable {
     this.pending.clear();
   }
 
+  private defaultColor(slot: number, theme: RGBA): RGBA {
+    const programColor = this.cache.colors().get(slot);
+
+    return programColor === undefined ? theme : rgbaOf(programColor);
+  }
+
   private drawRow(index: number): void {
     const row = this.cache.row(index);
 
@@ -152,7 +175,9 @@ export class PaneRenderable extends FrameBufferRenderable {
     const cursorColumn = cursor?.visible === true && cursor.y === index ? cursor.x : undefined;
     const columns = Math.min(row.cells.length / cellWords, this.frameBuffer.width);
 
-    this.frameBuffer.fillRect(0, index, this.frameBuffer.width, 1, RGBA.defaultBackground());
+    const fill = this.defaultColor(defaultBackgroundSlot, RGBA.defaultBackground());
+
+    this.frameBuffer.fillRect(0, index, this.frameBuffer.width, 1, fill);
 
     for (let column = 0; column < columns; column++) {
       this.drawCell(row, column, index, column === cursorColumn);
@@ -178,8 +203,11 @@ export class PaneRenderable extends FrameBufferRenderable {
       row.clusters.get(column) ??
       String.fromCodePoint(codePoint === 0 ? blankCodePoint : codePoint);
 
-    const foreground = colorOf(row.cells[start + 1] ?? 0, RGBA.defaultForeground());
-    const background = colorOf(row.cells[start + 2] ?? 0, RGBA.defaultBackground());
+    const programColors = this.cache.colors();
+    const defaultForeground = this.defaultColor(defaultForegroundSlot, RGBA.defaultForeground());
+    const defaultBackground = this.defaultColor(defaultBackgroundSlot, RGBA.defaultBackground());
+    const foreground = colorOf(row.cells[start + 1] ?? 0, defaultForeground, programColors);
+    const background = colorOf(row.cells[start + 2] ?? 0, defaultBackground, programColors);
     const shownFlags = atCursor ? flags ^ CellFlag.inverse : flags;
 
     this.frameBuffer.drawText(text, column, y, foreground, background, attributesOf(shownFlags));

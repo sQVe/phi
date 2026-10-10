@@ -5,6 +5,7 @@ import { createRoot } from '@opentui/react';
 import type { AttachSession, CloseReason } from '../client/client.ts';
 import { PaneRenderable } from './paneRenderable.ts';
 import { StatusBar } from './statusBar.tsx';
+import { themeFromDetectedColors } from './terminalTheme.ts';
 
 const mountPane = (session: AttachSession, renderer: CliRenderer, box: BoxRenderable) => {
   let pane: PaneRenderable | undefined;
@@ -47,6 +48,20 @@ const mountPane = (session: AttachSession, renderer: CliRenderer, box: BoxRender
   return unsubscribe;
 };
 
+const paletteTimeoutMs = 500;
+
+const paletteSize = 16;
+
+// A terminal that does not answer the color queries leaves the server's default colors in place.
+const reportTheme = async (session: AttachSession, renderer: CliRenderer): Promise<void> => {
+  const colors = await renderer.getPalette({ size: paletteSize, timeout: paletteTimeoutMs });
+  const theme = themeFromDetectedColors(colors);
+
+  if (theme !== undefined) {
+    session.setTheme(theme);
+  }
+};
+
 export const runAttach = async (session: AttachSession): Promise<CloseReason> => {
   const renderer = await createCliRenderer({ exitOnCtrlC: false, exitSignals: [] });
   const root = createRoot(renderer);
@@ -75,6 +90,10 @@ export const runAttach = async (session: AttachSession): Promise<CloseReason> =>
 
   renderer.on('resize', resize);
   resize(renderer.terminalWidth, renderer.terminalHeight);
+
+  reportTheme(session, renderer).catch(() => {
+    // Detection is optional; the pane keeps the server's colors.
+  });
 
   root.render(
     <box flexDirection="column" width="100%" height="100%">
