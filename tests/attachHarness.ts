@@ -21,13 +21,15 @@ export interface AttachHarness {
   receivedBytes: () => Buffer;
   receivedText: () => string;
   until: (condition: () => boolean) => Promise<undefined>;
+  // The client reports its theme once the outer terminal has answered its color queries.
+  themeReported: () => boolean;
   // What the outer terminal answered the client's queries, such as its palette colors.
   repliesText: () => string;
 }
 
 interface AttachOptions {
-  // OpenTUI asks for the palette only without truecolor, so the default keeps its replies out of
-  // tests that time their reads.
+  // Without truecolor, OpenTUI also asks for the palette on its own, at a time the tests do not
+  // control, so the default keeps those replies out of tests that time their reads.
   truecolor?: boolean;
 }
 
@@ -61,6 +63,7 @@ const paneRows = (modes: number) => {
       rowCount: 1,
       cells,
       graphemes: new Uint32Array(),
+      colors: new Uint32Array(),
     }),
   );
 };
@@ -73,6 +76,7 @@ export const setupAttach = async (
   const socketPath = join(directory, 'phi.sock');
   const decoder = createFrameDecoder();
   const received: Uint8Array[] = [];
+  let themeReported = false;
   const waiters = new Set<() => void>();
 
   const changed = () => {
@@ -104,6 +108,11 @@ export const setupAttach = async (
           }
 
           const parsed = parseControl(frame.payload);
+
+          if (parsed.ok && parsed.message.type === 'theme') {
+            themeReported = true;
+            changed();
+          }
 
           if (parsed.ok && parsed.message.type === 'hello') {
             socket.write(control({ type: 'welcome' }));
@@ -203,5 +212,16 @@ export const setupAttach = async (
 
   const repliesText = () => Buffer.concat(replies).toString();
 
-  return { statusBar, type, receivedBytes, receivedText, until, repliesText };
+  // Typing before the color replies arrive would race them through the client's stdin.
+  await until(() => themeReported);
+
+  return {
+    statusBar,
+    type,
+    receivedBytes,
+    receivedText,
+    until,
+    repliesText,
+    themeReported: () => themeReported,
+  };
 };
