@@ -6,7 +6,7 @@ for example OSC 11 to black on a terminal whose background default is black. Com
 color with its default drops that color. Ghostty already tracks the palette override mask and
 the foreground and background overrides, and these keys expose them.
 
-Upstream: no report filed yet.
+Upstream: https://github.com/ghostty-org/ghostty/discussions/14628
 
 --- a/include/ghostty/vt/terminal.h
 +++ b/include/ghostty/vt/terminal.h

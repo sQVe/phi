@@ -6,7 +6,7 @@ theme for the rest. Upstream resets only the palette on RIS, like xterm and VTE,
 keep a program's colors after a reset. tmux and Zellij clear a pane's colors on RIS, and Phi does
 the same. The defaults the host set stay in place.
 
-Upstream: no report filed yet.
+Upstream: https://github.com/ghostty-org/ghostty/discussions/14627
 
 --- a/src/terminal/Terminal.zig
 +++ b/src/terminal/Terminal.zig
