@@ -2,7 +2,7 @@ import { expect, it } from 'bun:test';
 
 import type { InputMode } from '../client/client.ts';
 import { ModeFlag } from '../rows/rows.ts';
-import { routeKey, routePaste } from './input.ts';
+import { createInputRouter, routeKey, routePaste } from './input.ts';
 
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
@@ -85,4 +85,63 @@ it('sends a paste in normal mode and keeps the mode', () => {
   expect(paste('abc', ModeFlag.bracketedPaste)).toBe('\x1b[200~abc\x1b[201~');
   expect(paste('abc')).toBe('abc');
   expect(key('a', normal).mode).toBe('normal');
+});
+
+const router = (initial: InputMode, modes: number) => {
+  let mode = initial;
+  const sent: string[] = [];
+
+  const input = createInputRouter({
+    mode: () => mode,
+    setMode: (next) => {
+      mode = next;
+    },
+    modes: () => modes,
+    send: (bytes) => {
+      if (bytes.length > 0) {
+        sent.push(decoder.decode(bytes));
+      }
+    },
+  });
+
+  return { input, sent, mode: () => mode };
+};
+
+const lone = { kind: 'key', raw: '\x1b', escapeSent: false } as const;
+const arrow = { kind: 'key', raw: '\x1b[A', escapeSent: true } as const;
+const split = { kind: 'paste', bytes: encoder.encode('hi'), escapeSent: true } as const;
+
+it('drops the sent Escape from a split arrow when the Escape reached the pane', () => {
+  const { input, sent } = router('insert', ModeFlag.applicationCursorKeys);
+
+  input(lone);
+  input(arrow);
+
+  expect(sent).toEqual(['\x1b', 'OA']);
+});
+
+it('sends the whole split arrow when normal mode consumed the Escape', () => {
+  const { input, sent, mode } = router('normal', ModeFlag.applicationCursorKeys);
+
+  input(lone);
+  input(arrow);
+
+  expect(sent).toEqual(['\x1bOA']);
+  expect(mode()).toBe('insert');
+});
+
+it('drops the sent Escape from a split paste only when the Escape reached the pane', () => {
+  const inserted = router('insert', ModeFlag.bracketedPaste);
+
+  inserted.input(lone);
+  inserted.input(split);
+
+  expect(inserted.sent).toEqual(['\x1b', '[200~hi\x1b[201~']);
+
+  const normal = router('normal', ModeFlag.bracketedPaste);
+
+  normal.input(lone);
+  normal.input(split);
+
+  expect(normal.sent).toEqual(['\x1b[200~hi\x1b[201~']);
 });

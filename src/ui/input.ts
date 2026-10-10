@@ -1,6 +1,17 @@
 import type { InputMode } from '../client/client.ts';
 import { ModeFlag } from '../rows/rows.ts';
 
+interface TokenRouterHost {
+  mode: () => InputMode;
+  setMode: (mode: InputMode) => void;
+  modes: () => number;
+  send: (bytes: Uint8Array) => void;
+}
+
+type RoutedToken =
+  | { kind: 'key'; raw: string; escapeSent: boolean }
+  | { kind: 'paste'; bytes: Uint8Array; escapeSent: boolean };
+
 interface KeyRoute {
   bytes: Uint8Array;
   mode: InputMode;
@@ -68,4 +79,34 @@ export const routePaste = (bytes: Uint8Array, modes: number): Uint8Array => {
   wrapped.set(pasteEnd, pasteStart.length + bytes.length);
 
   return wrapped;
+};
+
+// A token with escapeSent continues an Escape that the tokenizer already sent on. Its first routed
+// byte is that Escape, so it is dropped, but only when the Escape really reached the pane: normal
+// mode consumes an Escape. When the pane does not ask for bracketed paste, the pane keeps the stray
+// Escape and gets the bare paste. A terminal reply that arrives split after a lone Escape cannot
+// take that Escape back either.
+export const createInputRouter = (host: TokenRouterHost): ((token: RoutedToken) => void) => {
+  let escapeInPane = false;
+
+  const withoutSentEscape = (bytes: Uint8Array, escapeSent: boolean): Uint8Array =>
+    escapeSent && escapeInPane ? bytes.subarray(1) : bytes;
+
+  return (token) => {
+    if (token.kind === 'paste') {
+      const routed = routePaste(token.bytes, host.modes());
+      const wrapped = routed.length > token.bytes.length;
+
+      host.send(wrapped ? withoutSentEscape(routed, token.escapeSent) : routed);
+      escapeInPane = false;
+
+      return;
+    }
+
+    const routed = routeKey(token.raw, host.mode(), host.modes());
+
+    host.send(withoutSentEscape(routed.bytes, token.escapeSent));
+    host.setMode(routed.mode);
+    escapeInPane = token.raw === escapeKey && routed.bytes.length > 0;
+  };
 };

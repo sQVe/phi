@@ -1,11 +1,12 @@
 import { createCliRenderer } from '@opentui/core';
-import type { BoxRenderable, CliRenderer, KeyEvent, PasteEvent } from '@opentui/core';
+import type { BoxRenderable, CliRenderer } from '@opentui/core';
 import { createRoot } from '@opentui/react';
 
 import type { AttachSession, CloseReason } from '../client/client.ts';
-import { routeKey, routePaste } from './input.ts';
+import { createInputRouter } from './input.ts';
 import { PaneRenderable } from './paneRenderable.ts';
 import { StatusBar } from './statusBar.tsx';
+import { takeStdin } from './stdinInput.ts';
 import { themeFromDetectedColors } from './terminalTheme.ts';
 
 const mountPane = (session: AttachSession, renderer: CliRenderer, box: BoxRenderable) => {
@@ -69,28 +70,25 @@ const paneModes = (session: AttachSession): number => {
   return current === undefined ? 0 : (session.rowCache(current.id)?.modes() ?? 0);
 };
 
-const routeInput = (session: AttachSession) => {
-  const sendToPane = (bytes: Uint8Array): void => {
-    const current = session.getState().snapshot.pane;
+const sendToPane = (session: AttachSession, bytes: Uint8Array): void => {
+  const current = session.getState().snapshot.pane;
 
-    if (current !== undefined && bytes.length > 0) {
-      session.sendInput(current.id, bytes);
-    }
-  };
-
-  const onKey = (key: KeyEvent): void => {
-    const routed = routeKey(key.raw, session.getState().inputMode, paneModes(session));
-
-    sendToPane(routed.bytes);
-    session.setInputMode(routed.mode);
-  };
-
-  const onPaste = (event: PasteEvent): void => {
-    sendToPane(routePaste(event.bytes, paneModes(session)));
-  };
-
-  return { onKey, onPaste };
+  if (current !== undefined && bytes.length > 0) {
+    session.sendInput(current.id, bytes);
+  }
 };
+
+const routeInput = (session: AttachSession) =>
+  createInputRouter({
+    mode: () => session.getState().inputMode,
+    setMode: (mode) => {
+      session.setInputMode(mode);
+    },
+    modes: () => paneModes(session),
+    send: (bytes) => {
+      sendToPane(session, bytes);
+    },
+  });
 
 export const runAttach = async (session: AttachSession): Promise<CloseReason> => {
   // OpenTUI turns on Kitty key reporting for a null setting too. With every flag off, key.raw
@@ -102,7 +100,8 @@ export const runAttach = async (session: AttachSession): Promise<CloseReason> =>
     useMouse: false,
   });
 
-  const { onKey, onPaste } = routeInput(session);
+  const releaseStdin = takeStdin(renderer, routeInput(session));
+
   const root = createRoot(renderer);
   const signals = ['SIGTERM', 'SIGINT', 'SIGHUP'] as const;
   let unmountPane: (() => void) | undefined;
@@ -128,8 +127,6 @@ export const runAttach = async (session: AttachSession): Promise<CloseReason> =>
   }
 
   renderer.on('resize', resize);
-  renderer.keyInput.on('keypress', onKey);
-  renderer.keyInput.on('paste', onPaste);
   resize(renderer.terminalWidth, renderer.terminalHeight);
 
   reportTheme(session, renderer).catch(() => {
@@ -151,8 +148,7 @@ export const runAttach = async (session: AttachSession): Promise<CloseReason> =>
     }
 
     renderer.off('resize', resize);
-    renderer.keyInput.off('keypress', onKey);
-    renderer.keyInput.off('paste', onPaste);
+    releaseStdin();
     unmountPane?.();
     root.unmount();
     renderer.destroy();
