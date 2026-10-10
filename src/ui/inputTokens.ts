@@ -174,6 +174,9 @@ const pasteTail = (open: Paste): Uint8Array => {
   return tail;
 };
 
+const onlyReplies = (tokens: InputToken[]): boolean =>
+  tokens.length > 0 && tokens.every((token) => token.kind === 'response');
+
 const indexOfPasteEnd = (bytes: Uint8Array, from: number): number => {
   for (let index = from; index + pasteEnd.length <= bytes.length; index += 1) {
     if (pasteEnd.every((expected, offset) => bytes[index + offset] === expected)) {
@@ -550,11 +553,18 @@ export const createInputTokenizer = (): InputTokenizer => {
     const previousHeldAt = heldAt;
     const wasHolding = held.length > 0;
     const input = continues ? concat(Uint8Array.of(escape), bytes) : concat(held, bytes);
+    const sentEscapeAt = escapeSentAt;
+    const before = tokens.length;
 
     run(input, continues || resumes, nowMs, false, tokens);
 
     if (wasHolding && held.length === input.length) {
       heldAt = previousHeldAt;
+    }
+
+    // A terminal reply can arrive between a lone Escape and the rest of its key.
+    if (onlyReplies(tokens.slice(before)) && held.length === 0) {
+      escapeSentAt = sentEscapeAt;
     }
 
     return tokens;

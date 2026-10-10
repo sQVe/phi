@@ -54,6 +54,18 @@ it('emits a cursor key tail after a lone Escape inside the window as a continuat
   expect(read('[Ax', 19)).toEqual(['key:\x1b[A:sent', 'key:x']);
 });
 
+it('keeps a cursor key tail a continuation when a terminal reply arrives before it', () => {
+  const { read } = setup();
+
+  read('\x1b', 0);
+
+  expect(read('\x1b]4;1;rgb:cdcd/0000/0000\x07', 5)).toEqual([
+    'response:\x1b]4;1;rgb:cdcd/0000/0000\x07',
+  ]);
+
+  expect(read('[A', 10)).toEqual(['key:\x1b[A:sent']);
+});
+
 it('reads a cursor key tail after a lone Escape outside the window as plain keys', () => {
   const { read } = setup();
 
