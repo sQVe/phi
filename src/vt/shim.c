@@ -413,6 +413,23 @@ size_t pane_colors(Pane *pane, uint32_t *out) {
   return words;
 }
 
+static GhosttyColorRgb rgb_from_key(uint32_t color) {
+  return (GhosttyColorRgb){(uint8_t)(color >> 16), (uint8_t)(color >> 8), (uint8_t)color};
+}
+
+// Sets the default foreground and background, then palette indexes 0-15, from 18 words of 0xRRGGBB.
+// Colors a program set with OSC stay as they are.
+void pane_set_default_colors(Pane *pane, const uint32_t *colors) {
+  GhosttyColorRgb foreground = rgb_from_key(colors[0]);
+  GhosttyColorRgb background = rgb_from_key(colors[1]);
+  GhosttyColorRgb palette[256];
+  ghostty_terminal_get(pane->terminal, GHOSTTY_TERMINAL_DATA_COLOR_PALETTE_DEFAULT, palette);
+  for (uint32_t index = 0; index < 16; index++) palette[index] = rgb_from_key(colors[2 + index]);
+  ghostty_terminal_set(pane->terminal, GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, &foreground);
+  ghostty_terminal_set(pane->terminal, GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &background);
+  ghostty_terminal_set(pane->terminal, GHOSTTY_TERMINAL_OPT_COLOR_PALETTE, palette);
+}
+
 static GhosttyPoint active_top_point(void) {
   return (GhosttyPoint){.tag = GHOSTTY_POINT_TAG_ACTIVE, .value = {.coordinate = {.x = 0, .y = 0}}};
 }

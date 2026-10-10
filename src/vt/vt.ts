@@ -108,6 +108,12 @@ const maxColorWords = 516;
 
 const maxDimension = 65_535;
 
+const largestColor = 0xff_ff_ff;
+
+const paletteSize = 16;
+
+const isColor = (value: number) => Number.isInteger(value) && value >= 0 && value <= largestColor;
+
 // The FFI passes sizes as u16 and would wrap anything outside that range to another size.
 const fitsDimension = (value: number) =>
   Number.isInteger(value) && value >= 0 && value <= maxDimension;
@@ -179,6 +185,7 @@ const loadLibrary = () =>
     pane_stable_rows: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.bool },
     pane_scrollback: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.void },
     pane_colors: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.u64 },
+    pane_set_default_colors: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.void },
     shim_ghostty_commit: { args: [], returns: FFIType.cstring },
   }).symbols;
 
@@ -403,6 +410,24 @@ export class Terminal {
     const words = Number(this.symbols.pane_colors(this.live(), this.colorWords));
 
     return this.colorWords.slice(0, words);
+  }
+
+  // Sets the colors that OSC 4, 10, and 11 queries answer and that cells without a color use, as
+  // 0xRRGGBB numbers: the foreground, the background, and palette indexes 0-15. Colors a program
+  // set stay in place and do not show in colors().
+  setDefaultColors(foreground: number, background: number, palette: readonly number[]): void {
+    invariant(
+      palette.length === paletteSize,
+      `Palette must have ${paletteSize} colors, got ${palette.length}.`,
+    );
+
+    const colors = [foreground, background, ...palette];
+
+    for (const color of colors) {
+      invariant(isColor(color), `Color must be an integer in 0..0xffffff, got ${color}.`);
+    }
+
+    this.symbols.pane_set_default_colors(this.live(), Uint32Array.from(colors));
   }
 
   private growFrameBuffers(): void {
