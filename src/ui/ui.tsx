@@ -91,8 +91,8 @@ const routeInput = (session: AttachSession) =>
   });
 
 export const runAttach = async (session: AttachSession): Promise<CloseReason> => {
-  // OpenTUI turns on Kitty key reporting for a null setting too. With every flag off, key.raw
-  // stays the legacy bytes the pane expects.
+  // OpenTUI turns on Kitty key reporting for a null setting too. With every flag off, the terminal
+  // sends the legacy key bytes the pane expects.
   const renderer = await createCliRenderer({
     exitOnCtrlC: false,
     exitSignals: [],

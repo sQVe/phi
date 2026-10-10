@@ -54,7 +54,7 @@ const routeNormalKey = (raw: string): KeyRoute => {
   return { bytes: nothing, mode: leavesNormal ? 'insert' : 'normal' };
 };
 
-// raw is the key's legacy bytes, so the caller must not turn on Kitty key reporting.
+// raw is a key's legacy bytes. Kitty key reporting must stay off, or the bytes are not legacy.
 export const routeKey = (raw: string, mode: InputMode, modes: number): KeyRoute => {
   if (mode === 'normal') {
     return routeNormalKey(raw);
